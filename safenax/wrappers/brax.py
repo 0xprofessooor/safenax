@@ -1,5 +1,5 @@
 from typing import Optional
-from brax import envs
+from brax import envs, State
 from brax.envs.wrappers.training import EpisodeWrapper, AutoResetWrapper
 import jax
 from jax import numpy as jnp
@@ -25,17 +25,19 @@ class BraxToGymnaxWrapper:
     def step(
         self,
         key: PRNGKey,
-        state: jax.Array,
+        state: State,
         action: jax.Array,
         params: Optional[EnvParams] = None,
     ):
         next_state = self._env.step(state, action)
+        # Return a copy of info dict to prevent downstream wrappers from mutating state.info
+        info_copy = dict(next_state.info)
         return (
             next_state.obs,
             next_state,
             next_state.reward,
             next_state.done > 0.5,
-            next_state.info,
+            info_copy,
         )
 
     def observation_space(self, params: Optional[EnvParams] = None):

@@ -4,6 +4,7 @@ import chex
 from brax import envs, State
 from brax.envs.ant import Ant
 from safenax.wrappers.brax import BraxToGymnaxWrapper
+from gymnax.wrappers import LogWrapper
 
 
 class FragileAnt(Ant):
@@ -73,27 +74,29 @@ if __name__ == "__main__":
     episode_length = 1000
 
     # Create environment with better limit
-    env = BraxToGymnaxWrapper(env_name="fragile_ant", episode_length=episode_length)
+    env = LogWrapper(
+        BraxToGymnaxWrapper(env_name="fragile_ant", episode_length=episode_length)
+    )
 
     def single_episode(rng):
         """Run a single episode with random actions."""
         reset_rng, rollout_rng = jax.random.split(rng)
-        initial_state = env._env.reset(reset_rng)
+        obs, state = env.reset(reset_rng, None)  # Use Gymnax API
 
         def step_fn(carry, _):
-            state, rng = carry
+            obs, state, rng = carry
             action_rng, rng = jax.random.split(rng)
             action = env.action_space().sample(key=action_rng)
-            next_state = env._env.step(state, action)
-            max_vel = jnp.max(jnp.abs(next_state.pipeline_state.xd.vel[1:]))
-            cost = next_state.info.get("cost", 0.0)
-            reward = next_state.reward
-            return (next_state, rng), (cost, reward, max_vel)
+            next_obs, next_state, reward, done, info = env.step(
+                action_rng, state, action, None
+            )
+            cost = info.get("cost", 0.0)
+            return (next_obs, next_state, rng), (cost, reward)
 
-        final_carry, (costs, rewards, max_vels) = jax.lax.scan(
-            step_fn, (initial_state, rollout_rng), None, length=episode_length
+        final_carry, (costs, rewards) = jax.lax.scan(
+            step_fn, (obs, state, rollout_rng), None, length=episode_length
         )
-        return costs, rewards, jnp.sum(costs), max_vels
+        return costs, rewards, jnp.sum(costs)
 
     # Vectorize over episodes and JIT compile
     batched_rollout = jax.jit(jax.vmap(single_episode))
@@ -103,13 +106,10 @@ if __name__ == "__main__":
     master_rng = jax.random.PRNGKey(42)
     episode_rngs = jax.random.split(master_rng, n_episodes)
 
-    all_costs, all_rewards, total_costs, max_vels = batched_rollout(episode_rngs)
+    all_costs, all_rewards, total_costs = batched_rollout(episode_rngs)
 
     # Print statistics
     print(f"\nResults:")
-    print(
-        f"  Mean episode max velocity: {jnp.mean(max_vels):.2f} ± {jnp.std(max_vels):.2f}"
-    )
     print(
         f"  Mean episode reward: {jnp.mean(jnp.sum(all_rewards, axis=1)):.2f} ± {jnp.std(jnp.sum(all_rewards, axis=1)):.2f}"
     )
