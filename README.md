@@ -1,2 +1,3 @@
 # safenax
-Cost constrained environments with a gymnax interface
+
+Cost constrained environments (e.g. CMDPs) with a gymnax interface.
