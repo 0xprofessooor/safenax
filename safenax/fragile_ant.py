@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
-from brax import envs
+import chex
+from brax import envs, State
 from brax.envs.ant import Ant
 from safenax.wrappers.brax import BraxToGymnaxWrapper
 
@@ -14,12 +15,12 @@ class FragileAnt(Ant):
     2. Cost Signal: Returns a cost of 1.0 if any joint velocity exceeds the 'gearbox_limit'.
     """
 
-    def __init__(self, gearbox_limit: float = 5.0, noise_scale: float = 0.1, **kwargs):
+    def __init__(self, gearbox_limit: float = 2.0, noise_scale: float = 0.1, **kwargs):
         super().__init__(**kwargs)
         self.gearbox_limit = gearbox_limit
         self.noise_scale = noise_scale
 
-    def step(self, state, action):
+    def step(self, state: State, action: jax.Array) -> State:
         # 1. HANDLE STOCHASTICITY
         # Generate Gaussian noise and add to action
         # This prevents the agent from perfectly memorizing a trajectory
@@ -52,7 +53,7 @@ class FragileAnt(Ant):
 
         return next_state.replace(info=new_info)
 
-    def reset(self, rng):
+    def reset(self, rng: chex.PRNGKey) -> State:
         # Standard reset, but initialize the RNG key in info
         state = super().reset(rng)
         new_info = {**state.info, "rng": rng, "cost": jnp.array(0.0)}
