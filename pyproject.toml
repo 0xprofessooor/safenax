@@ -1,0 +1,21 @@
+[project]
+name = "safenax"
+version = "0.1.0"
+description = "Constrained environments with a gymnax interface"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "brax>=0.13.0",
+    "chex>=0.1.91",
+    "flax>=0.12.1",
+    "gymnax>=0.0.9",
+    "jax>=0.8.1",
+    "matplotlib>=3.10.7",
+    "polars>=1.35.2",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.5.0",
+    "pytest>=9.0.1",
+]
