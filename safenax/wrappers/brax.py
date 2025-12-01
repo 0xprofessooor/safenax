@@ -30,7 +30,13 @@ class BraxToGymnaxWrapper:
         params: Optional[EnvParams] = None,
     ):
         next_state = self._env.step(state, action)
-        return next_state.obs, next_state, next_state.reward, next_state.done > 0.5, {}
+        return (
+            next_state.obs,
+            next_state,
+            next_state.reward,
+            next_state.done > 0.5,
+            next_state.info,
+        )
 
     def observation_space(self, params: Optional[EnvParams] = None):
         # Get actual observation spec from Brax if available
