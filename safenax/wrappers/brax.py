@@ -31,7 +31,7 @@ class BraxToGymnaxWrapper:
     ):
         next_state = self._env.step(state, action)
         # Return a copy of info dict to prevent downstream wrappers from mutating state.info
-        info_copy = dict(next_state.info)
+        info_copy = {**next_state.info}
         return (
             next_state.obs,
             next_state,
