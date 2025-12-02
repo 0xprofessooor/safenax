@@ -3,8 +3,6 @@ import jax.numpy as jnp
 import chex
 from brax import envs, State
 from brax.envs.ant import Ant
-from safenax.wrappers.brax import BraxToGymnaxWrapper
-from gymnax.wrappers import LogWrapper
 
 
 class FragileAnt(Ant):
@@ -66,6 +64,7 @@ envs.register_environment("fragile_ant", FragileAnt)
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
+    from safenax.wrappers import BraxToGymnaxWrapper, LogWrapper
 
     print("Testing FragileAnt with random policy...")
 
@@ -91,12 +90,13 @@ if __name__ == "__main__":
                 action_rng, state, action, None
             )
             cost = info.get("cost", 0.0)
-            return (next_obs, next_state, rng), (cost, reward)
+            # Return observations in the scan output
+            return (next_obs, next_state, rng), (cost, reward, obs)
 
-        final_carry, (costs, rewards) = jax.lax.scan(
+        final_carry, (costs, rewards, all_obs) = jax.lax.scan(
             step_fn, (obs, state, rollout_rng), None, length=episode_length
         )
-        return costs, rewards, jnp.sum(costs)
+        return costs, rewards, jnp.sum(costs), all_obs
 
     # Vectorize over episodes and JIT compile
     batched_rollout = jax.jit(jax.vmap(single_episode))
@@ -106,10 +106,15 @@ if __name__ == "__main__":
     master_rng = jax.random.PRNGKey(42)
     episode_rngs = jax.random.split(master_rng, n_episodes)
 
-    all_costs, all_rewards, total_costs = batched_rollout(episode_rngs)
+    all_costs, all_rewards, total_costs, all_obs = batched_rollout(episode_rngs)
 
     # Print statistics
     print(f"\nResults:")
+    print(
+        f"  Observation shape: {all_obs.shape}"
+    )  # (n_episodes, episode_length, obs_dim)
+    print(f"  Observation range: [{jnp.min(all_obs):.2f}, {jnp.max(all_obs):.2f}]")
+    print(f"  Mean observation: {jnp.mean(all_obs):.4f} ± {jnp.std(all_obs):.4f}")
     print(
         f"  Mean episode reward: {jnp.mean(jnp.sum(all_rewards, axis=1)):.2f} ± {jnp.std(jnp.sum(all_rewards, axis=1)):.2f}"
     )
