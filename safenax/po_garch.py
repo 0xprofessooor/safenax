@@ -396,7 +396,7 @@ class PortfolioOptimizationGARCH(Environment):
 
         obs = self.get_obs_easy(next_state, params)
         done = self.is_terminal(next_state, params)
-        info = {"cost": reward}
+        info = {"cost": -reward}
         return obs, next_state, reward, done, info
 
     def reset_env(
