@@ -4,15 +4,14 @@
 import safenax.fragile_ant  # noqa: F401
 
 from safenax.fragile_ant import FragileAnt
-from safenax.po import PortfolioOptimizationV0
-from safenax.po_garch import PortfolioOptimizationGARCH
+from safenax.portfolio_optimization import PortfolioOptimizationGARCH, PortfolioOptimizationCrypto
 from safenax.frozen_lake import FrozenLake
 from safenax.eco_ant import EcoAntV1, EcoAntV2
 
 
 __all__ = [
     "FragileAnt",
-    "PortfolioOptimizationV0",
+    "PortfolioOptimizationCrypto",
     "PortfolioOptimizationGARCH",
     "FrozenLake",
     "EcoAntV1",

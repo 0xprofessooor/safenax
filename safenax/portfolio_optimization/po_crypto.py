@@ -51,7 +51,7 @@ class EnvParams:
     trade_threshold: float
 
 
-class PortfolioOptimizationV0(Environment):
+class PortfolioOptimizationCrypto(Environment):
     def __init__(self, data_paths: Dict[str, str], step_size: int = 3600):
         super().__init__()
         data_dict = {key: load_binance_klines(path) for key, path in data_paths.items()}
@@ -63,7 +63,7 @@ class PortfolioOptimizationV0(Environment):
 
     @property
     def name(self) -> str:
-        return "PortfolioOptimizationV0"
+        return "PortfolioOptimizationCrypto-v0"
 
     @property
     def default_params(self) -> EnvParams:
@@ -209,7 +209,7 @@ if __name__ == "__main__":
         "BTC": "data/BTCUSDT_2024-10-15_2025-10-15_1s.csv",
         "ETH": "data/ETHUSDT_2024-10-15_2025-10-15_1s.csv",
     }
-    env = PortfolioOptimizationV0(data_paths=data_paths)
+    env = PortfolioOptimizationCrypto(data_paths=data_paths)
     key = jax.random.PRNGKey(0)
     obs, state = env.reset(key, env.default_params)
     print(state)
