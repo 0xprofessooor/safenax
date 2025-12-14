@@ -1,5 +1,6 @@
 from typing import Optional
 from brax import envs, State
+from brax.envs import Env
 from brax.envs.wrappers.training import EpisodeWrapper, AutoResetWrapper
 import jax
 from jax import numpy as jnp
@@ -9,9 +10,16 @@ from chex import PRNGKey
 
 class BraxToGymnaxWrapper:
     def __init__(
-        self, env_name: str, episode_length: int = 1000, backend: str = "positional"
+        self, env: Optional[Env] = None, env_name: Optional[str] = None, episode_length: int = 1000, backend: str = "positional"
     ):
-        env = envs.get_environment(env_name=env_name, backend=backend)
+        if env is None and env_name is None:
+            raise ValueError("Must provide either env or env_name")
+        if env is not None and env_name is not None:
+            raise ValueError("Cannot provide both env and env_name")
+
+        if env is None:
+            env = envs.get_environment(env_name=env_name, backend=backend)
+
         env = EpisodeWrapper(env, episode_length=episode_length, action_repeat=1)
         env = AutoResetWrapper(env)
         self._env = env
