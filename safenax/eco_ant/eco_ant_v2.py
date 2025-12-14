@@ -1,0 +1,75 @@
+import jax
+import jax.numpy as jnp
+from brax import envs
+from brax.envs.base import State
+from brax.envs.ant import Ant
+
+class EcoAntV2(Ant):
+    """
+    Ant with a 'low battery' constraint.
+    
+    Modifications:
+    1. Stochasticity: Adds Gaussian noise to actions to simulate motor imperfection.
+    2. Cost Signal: Returns energy used per step.
+    """
+
+    def __init__(self, battery_limit: float = 500.0, noise_scale: float = 0.1, **kwargs):
+        super().__init__(**kwargs)
+        self.battery_limit = battery_limit
+        self.noise_scale = noise_scale
+
+    @property
+    def name(self) -> str:
+        return "EcoAnt-v2"
+
+    def step(self, state: State, action: jax.Array) -> State:
+        # 1. RETRIEVE BATTERY FROM CURRENT OBSERVATION
+        current_battery = state.info["battery"]
+
+        # 2. HANDLE STOCHASTICITY
+        _, noise_key = jax.random.split(state.info["rng"])
+        noise = jax.random.normal(noise_key, shape=action.shape) * self.noise_scale
+        noisy_action = action + noise
+        noisy_action = jnp.clip(noisy_action, -1.0, 1.0)
+
+        # 3. CALCULATE ENERGY AND NEW BATTERY
+        energy_used = jnp.sum(jnp.square(noisy_action)) * 0.5
+        new_battery = current_battery - energy_used
+        
+        # Check constraints
+        is_empty = new_battery <= 0.0
+        new_battery = jnp.maximum(new_battery, 0.0)
+
+        # 4. PHYSICS STEP
+        next_state = super().step(state, noisy_action)
+
+        # 5. Termination: OR with existing done condition
+        new_done = jnp.max(jnp.array([next_state.done, is_empty]))
+
+        new_info = {
+            **next_state.info,
+            "rng": noise_key,
+            "cost": energy_used,
+            "battery": new_battery
+        }
+
+        return next_state.replace(
+            done=new_done,
+            info=new_info
+        )
+
+    def reset(self, rng: jax.Array) -> State:
+        state = super().reset(rng)
+        
+        # Initialize info
+        new_info = {
+            **state.info,
+            "rng": rng, 
+            "cost": jnp.array(0.0),
+            "battery": jnp.array(self.battery_limit)
+        }
+        
+        return state.replace(info=new_info)
+
+
+envs.register_environment(EcoAntV2.name, EcoAntV2)
