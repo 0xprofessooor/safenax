@@ -2,6 +2,7 @@ import pytest
 import jax
 import jax.numpy as jnp
 from safenax import EcoAntV1
+from brax.envs.ant import Ant
 
 
 @pytest.fixture
@@ -13,6 +14,13 @@ def env():
 def key():
     """Provides a JAX PRNG key."""
     return jax.random.PRNGKey(0)
+
+
+def test_obs_size(env: EcoAntV1):
+    """Verifies that observation size is correct (original + 1 for battery)."""
+    original_obs_size = Ant().observation_size
+    expected_size = original_obs_size + 1  # +1 for battery percentage
+    assert env.observation_size == expected_size
 
 def test_initialization(env: EcoAntV1, key: jax.Array):
     """Verifies that reset places the battery PERCENTAGE (1.0) in observation."""

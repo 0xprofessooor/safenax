@@ -22,11 +22,6 @@ class EcoAntV1(Ant):
     def name(self) -> str:
         return "EcoAnt-v1"
 
-    @property
-    def observation_size(self) -> int:
-        # We append 1 scalar (remaining battery) to the standard Ant observation
-        return super().observation_size + 1
-
     def step(self, state: State, action: jax.Array) -> State:
         # 1. RETRIEVE BATTERY FROM CURRENT OBSERVATION
         current_battery = state.info["battery"]
