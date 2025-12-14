@@ -21,6 +21,10 @@ class BraxToGymnaxWrapper:
     def reset(self, key: PRNGKey, params: Optional[EnvParams] = None):
         state = self._env.reset(key)
         return state.obs, state
+    
+    @property
+    def default_params(self) -> EnvParams:
+        return EnvParams()
 
     def step(
         self,
