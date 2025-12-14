@@ -10,7 +10,11 @@ from chex import PRNGKey
 
 class BraxToGymnaxWrapper:
     def __init__(
-        self, env: Optional[Env] = None, env_name: Optional[str] = None, episode_length: int = 1000, backend: str = "positional"
+        self,
+        env: Optional[Env] = None,
+        env_name: Optional[str] = None,
+        episode_length: int = 1000,
+        backend: str = "positional"
     ):
         if env is None and env_name is None:
             raise ValueError("Must provide either env or env_name")
