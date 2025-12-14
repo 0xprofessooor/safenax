@@ -3,7 +3,6 @@ from enum import Enum
 from gymnax.environments.environment import Environment, EnvParams, EnvState
 from gymnax.environments import spaces
 from flax import struct
-import chex
 import jax
 from jax import numpy as jnp
 from matplotlib import pyplot as plt
@@ -121,7 +120,7 @@ class PortfolioOptimizationGARCH(Environment):
 
     def __init__(
         self,
-        rng: chex.PRNGKey,
+        rng: jax.Array,
         garch_params: Dict[str, GARCHParams],
         step_size: int = 1,
         num_samples: int = 1_000_000,
@@ -318,7 +317,7 @@ class PortfolioOptimizationGARCH(Environment):
         return jnp.logical_or(max_steps_reached, portfolio_bankrupt)
 
     def step_env(
-        self, key: chex.PRNGKey, state: EnvState, action: jax.Array, params: EnvParams
+        self, key: jax.Array, state: EnvState, action: jax.Array, params: EnvParams
     ) -> tuple[jax.Array, EnvState, jax.Array, jax.Array, dict]:
         """Execute one environment step with pre-generated GARCH prices."""
         time = state.time + self.step_size
@@ -400,7 +399,7 @@ class PortfolioOptimizationGARCH(Environment):
         return obs, next_state, reward, done, info
 
     def reset_env(
-        self, key: chex.PRNGKey, params: EnvParams
+        self, key: jax.Array, params: EnvParams
     ) -> Tuple[jax.Array, EnvState]:
         """
         Reset environment and sample from pre-generated GARCH paths.

@@ -1,6 +1,5 @@
 import jax
 import jax.numpy as jnp
-import chex
 from brax import envs, State
 from brax.envs.ant import Ant
 
@@ -18,6 +17,10 @@ class FragileAnt(Ant):
         super().__init__(**kwargs)
         self.gearbox_limit = gearbox_limit
         self.noise_scale = noise_scale
+
+    @property
+    def name(self) -> str:
+        return "FragileAnt"
 
     def step(self, state: State, action: jax.Array) -> State:
         # 1. HANDLE STOCHASTICITY
@@ -52,7 +55,7 @@ class FragileAnt(Ant):
 
         return next_state.replace(info=new_info)
 
-    def reset(self, rng: chex.PRNGKey) -> State:
+    def reset(self, rng: jax.Array) -> State:
         # Standard reset, but initialize the RNG key in info
         state = super().reset(rng)
         new_info = {**state.info, "rng": rng, "cost": jnp.array(0.0)}

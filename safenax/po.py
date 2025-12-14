@@ -3,7 +3,6 @@ from enum import Enum
 from gymnax.environments.environment import Environment, EnvParams, EnvState
 from gymnax.environments import spaces
 from flax import struct
-import chex
 import polars as pl
 import jax
 from jax import numpy as jnp
@@ -103,7 +102,7 @@ class PortfolioOptimizationV0(Environment):
         return jnp.logical_or(max_steps_reached, portfolio_bankrupt)
 
     def step_env(
-        self, key: chex.PRNGKey, state: EnvState, action: chex.Array, params: EnvParams
+        self, key: jax.Array, state: EnvState, action: jax.Array, params: EnvParams
     ) -> tuple[jax.Array, EnvState, jax.Array, jax.Array, dict]:
         time = state.time + self.step_size
         prices = jnp.concatenate(
@@ -166,7 +165,7 @@ class PortfolioOptimizationV0(Environment):
         return obs, next_state, reward, done, info
 
     def reset_env(
-        self, key: chex.PRNGKey, params: EnvParams
+        self, key: jax.Array, params: EnvParams
     ) -> Tuple[jax.Array, EnvState]:
         episode_length = params.max_steps * self.step_size
         max_start = self.data.shape[0] - episode_length
