@@ -14,7 +14,7 @@ class BraxToGymnaxWrapper:
         env: Optional[Env] = None,
         env_name: Optional[str] = None,
         episode_length: int = 1000,
-        backend: str = "positional"
+        backend: str = "positional",
     ):
         if env is None and env_name is None:
             raise ValueError("Must provide either env or env_name")
@@ -33,7 +33,7 @@ class BraxToGymnaxWrapper:
     def reset(self, key: PRNGKey, params: Optional[EnvParams] = None):
         state = self._env.reset(key)
         return state.obs, state
-    
+
     @property
     def default_params(self) -> EnvParams:
         return EnvParams()
