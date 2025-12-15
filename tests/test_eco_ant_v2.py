@@ -100,7 +100,7 @@ def test_termination_logic(env: EcoAntV2, key: jax.Array):
     assert next_state.done == 1.0
 
     # 4. Verify Battery Floor
-    assert next_state.info["battery"] == 0.0
+    assert next_state.info["battery"] == 10.0
 
 
 def test_stochasticity_impact(env: EcoAntV2, key: jax.Array):

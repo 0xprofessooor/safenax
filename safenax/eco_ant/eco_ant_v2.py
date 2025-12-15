@@ -53,7 +53,7 @@ class EcoAntV2(Ant):
             **next_state.info,
             "rng": noise_key,
             "cost": energy_used,
-            "battery": new_battery,
+            "battery": jnp.where(new_done, jnp.array(self.battery_limit), new_battery),
         }
 
         return next_state.replace(done=new_done, info=new_info)

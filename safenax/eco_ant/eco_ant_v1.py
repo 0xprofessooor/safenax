@@ -41,6 +41,7 @@ class EcoAntV1(Ant):
 
         # Check constraints
         is_empty = new_battery <= 0.0
+        new_battery = jnp.maximum(new_battery, 0.0)
         new_battery_pct = new_battery / self.battery_limit
 
         # 4. PHYSICS STEP
@@ -60,7 +61,7 @@ class EcoAntV1(Ant):
             **next_state.info,
             "rng": noise_key,
             "cost": cost,
-            "battery": jnp.where(new_done, self.battery_limit, new_battery),
+            "battery": jnp.where(new_done, jnp.array(self.battery_limit), new_battery),
         }
 
         return next_state.replace(obs=new_obs, done=new_done, info=new_info)
