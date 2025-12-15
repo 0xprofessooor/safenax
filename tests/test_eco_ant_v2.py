@@ -78,18 +78,12 @@ def test_battery_depletion_in_info(env: EcoAntV2, key: jax.Array):
     assert jnp.allclose(start_battery - energy_used, current_battery, atol=1e-5)
 
 
-def test_termination_logic(env: EcoAntV2, key: jax.Array):
+def test_termination_logic(key: jax.Array):
     """
     Verifies that the episode terminates when info['battery'] hits zero.
     """
-    state = env.reset(key)
-
-    # 1. Manually set battery to be very low in the info dict
-    # This simulates a "near death" state
-    low_battery_info = state.info.copy()
-    low_battery_info["battery"] = jnp.array(0.1)
-
-    near_death_state = state.replace(info=low_battery_info)
+    env = EcoAntV2(battery_limit=0.1, noise_scale=0.1)
+    near_death_state = env.reset(key)
 
     # 2. Take a large step to consume > 0.1 energy
     # Action of 1.0s usually consumes ~4.0 energy
@@ -100,7 +94,7 @@ def test_termination_logic(env: EcoAntV2, key: jax.Array):
     assert next_state.done == 1.0
 
     # 4. Verify Battery Floor
-    assert next_state.info["battery"] == 10.0
+    assert next_state.info["battery"] == 0.0
 
 
 def test_stochasticity_impact(env: EcoAntV2, key: jax.Array):

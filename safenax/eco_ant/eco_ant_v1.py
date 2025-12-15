@@ -27,7 +27,8 @@ class EcoAntV1(Ant):
 
     def step(self, state: State, action: jax.Array) -> State:
         # 1. RETRIEVE BATTERY FROM CURRENT OBSERVATION
-        current_battery = state.info["battery"]
+        current_battery_pct = state.obs[-1]
+        current_battery = current_battery_pct * self.battery_limit
 
         # 2. HANDLE STOCHASTICITY
         _, noise_key = jax.random.split(state.info["rng"])
@@ -47,8 +48,7 @@ class EcoAntV1(Ant):
         # 4. PHYSICS STEP
         next_state = super().step(state, noisy_action)
 
-        # 5. AUGMENT STATE
-        # Termination: OR with existing done condition
+        # 5. Termination: OR with existing done condition
         new_done = jnp.max(jnp.array([next_state.done, is_empty]))
 
         # Cost Signal: 1.0 if battery died this step
@@ -61,7 +61,7 @@ class EcoAntV1(Ant):
             **next_state.info,
             "rng": noise_key,
             "cost": cost,
-            "battery": jnp.where(new_done, jnp.array(self.battery_limit), new_battery),
+            "battery": new_battery,
         }
 
         return next_state.replace(obs=new_obs, done=new_done, info=new_info)

@@ -87,6 +87,7 @@ def test_termination_and_cost(env: EcoAntV1, key: jax.Array):
     # 1. Manually set battery to near-death in INFO (not Obs)
     # The environment logic reads current_battery = state.info["battery"]
     # So to test termination, we must hack the info dict.
+    env.battery_limit = 0.1  # Temporarily set limit low for test
     new_info = state.info.copy()
     new_info["battery"] = jnp.array(0.1)
 
@@ -102,7 +103,7 @@ def test_termination_and_cost(env: EcoAntV1, key: jax.Array):
     assert next_state.obs[-1] <= 0.0
 
     # Check Raw Battery Floor
-    assert next_state.info["battery"] == 10.0
+    assert next_state.info["battery"] == 0.0
 
     # Check Cost Signal
     assert next_state.info["cost"] == 1.0
@@ -143,7 +144,7 @@ def test_wrapper_step_api(wrapped_env: BraxToGymnaxWrapper, key: jax.Array):
     assert info["battery"] < 10.0
 
 
-def test_wrapper_autoreset_logic(wrapped_env: BraxToGymnaxWrapper, key: jax.Array):
+def test_wrapper_autoreset_logic(key: jax.Array):
     """
     CRITICAL TEST: Verifies AutoResetWrapper behavior on battery death.
 
@@ -154,15 +155,9 @@ def test_wrapper_autoreset_logic(wrapped_env: BraxToGymnaxWrapper, key: jax.Arra
        - Returns `done=True` (signaling the end of the dying episode)
        - Returns `obs` from the NEW reset state (Battery=1.0, not 0.0!)
     """
+    brax_env = EcoAntV1(battery_limit=0.1, noise_scale=0.1)
+    wrapped_env = BraxToGymnaxWrapper(env=brax_env, episode_length=10)
     obs, state = wrapped_env.reset(key)
-
-    # 1. Force near-death
-    new_info = state.info.copy()
-    new_info["battery"] = jnp.array(0.1)
-    # We must also update 'obs' because the Wrapper might use 'obs' for something,
-    # though usually physics uses 'state'. Let's keep obs as is (1.0) to prove
-    # the physics engine checks 'info', not 'obs'.
-    state = state.replace(info=new_info)
 
     # 2. Kill the agent
     action = jnp.ones(wrapped_env.action_size)
@@ -176,7 +171,7 @@ def test_wrapper_autoreset_logic(wrapped_env: BraxToGymnaxWrapper, key: jax.Arra
     # B. The 'info' contains the terminal cost of the DEAD agent
     # But includes the battery reset
     assert info["cost"] == 1.0
-    assert info["battery"] == 10.0
+    assert info["battery"] == 0.0
 
     # C. The 'next_obs' is from the NEW alive agent (AutoReset happened)
     # The observation returned is for the *next* step.
@@ -184,4 +179,4 @@ def test_wrapper_autoreset_logic(wrapped_env: BraxToGymnaxWrapper, key: jax.Arra
 
     # D. The 'next_state' is the NEW alive state
     assert next_state.info["cost"] == 1.0
-    assert next_state.info["battery"] == 10.0
+    assert next_state.info["battery"] == 0.0
