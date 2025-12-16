@@ -1,8 +1,8 @@
 import pytest
 import jax
 import jax.numpy as jnp
-from safenax.frozen_lake import FrozenLake, EnvParams
-from safenax.frozen_lake import (
+from safenax.frozen_lake.frozen_lake_v1 import FrozenLakeV1, EnvParams
+from safenax.frozen_lake.frozen_lake_v1 import (
     TILE_START,
     TILE_FROZEN,
     TILE_HOLE,
@@ -16,7 +16,7 @@ from safenax.frozen_lake import (
 @pytest.fixture
 def env():
     """Initializes the environment."""
-    return FrozenLake()
+    return FrozenLakeV1()
 
 
 @pytest.fixture
@@ -58,7 +58,7 @@ def params_slippery(params_deterministic: EnvParams) -> EnvParams:
 
 
 def test_jit_compilation(
-    env: FrozenLake, rng: jax.Array, params_deterministic: EnvParams
+    env: FrozenLakeV1, rng: jax.Array, params_deterministic: EnvParams
 ):
     """Verifies that reset and step can be JIT compiled without errors."""
     reset_jit = jax.jit(env.reset)
@@ -85,7 +85,7 @@ def test_map_parsing():
 
 
 def test_deterministic_reach_goal(
-    env: FrozenLake, rng: jax.Array, params_deterministic: EnvParams
+    env: FrozenLakeV1, rng: jax.Array, params_deterministic: EnvParams
 ):
     """
     Path: Start(0) -> Right(1) -> Down(3/Goal).
@@ -119,7 +119,7 @@ def test_deterministic_reach_goal(
 
 
 def test_deterministic_fall_in_hole(
-    env: FrozenLake, rng: jax.Array, params_deterministic: EnvParams
+    env: FrozenLakeV1, rng: jax.Array, params_deterministic: EnvParams
 ):
     """
     Path: Start(0) -> Down(2/Hole).
@@ -142,7 +142,7 @@ def test_deterministic_fall_in_hole(
 
 
 def test_custom_reward_schedule(
-    env: FrozenLake, rng: jax.Array, params_deterministic: EnvParams
+    env: FrozenLakeV1, rng: jax.Array, params_deterministic: EnvParams
 ):
     """
     Verifies that changing reward_schedule affects the output.
@@ -167,7 +167,9 @@ def test_custom_reward_schedule(
     assert reward == -5.0
 
 
-def test_slippery_dynamics(env: FrozenLake, rng: jax.Array, params_slippery: EnvParams):
+def test_slippery_dynamics(
+    env: FrozenLakeV1, rng: jax.Array, params_slippery: EnvParams
+):
     """
     Statistical test for slippery logic.
     We start at (0,0) and try to move Right.
@@ -201,7 +203,7 @@ def test_slippery_dynamics(env: FrozenLake, rng: jax.Array, params_slippery: Env
     assert 1 in unique_positions
 
 
-def test_truncation(env: FrozenLake, rng: jax.Array, params_deterministic: EnvParams):
+def test_truncation(env: FrozenLakeV1, rng: jax.Array, params_deterministic: EnvParams):
     """Test that episode ends when time limit is reached."""
     # Set max steps to 2
     short_params = params_deterministic.replace(max_steps_in_episode=2)
@@ -224,7 +226,9 @@ def test_truncation(env: FrozenLake, rng: jax.Array, params_deterministic: EnvPa
     assert state.time == 0
 
 
-def test_jit_rollout_scan(env: FrozenLake, rng: jax.Array, params_slippery: EnvParams):
+def test_jit_rollout_scan(
+    env: FrozenLakeV1, rng: jax.Array, params_slippery: EnvParams
+):
     """
     Verifies that the environment can be run in a fully compiled jax.lax.scan loop.
     This ensures no shape mismatches or control flow issues exist in the step logic.
@@ -282,7 +286,9 @@ def test_jit_rollout_scan(env: FrozenLake, rng: jax.Array, params_slippery: EnvP
     assert jnp.all(jnp.isin(rollout_data["reward"], jnp.array([0.0, 1.0])))
 
 
-def test_cost_signal(env: FrozenLake, rng: jax.Array, params_deterministic: EnvParams):
+def test_cost_signal(
+    env: FrozenLakeV1, rng: jax.Array, params_deterministic: EnvParams
+):
     """Ensure cost is 1.0 ONLY when falling into a hole."""
     step_jit = jax.jit(env.step)
     reset_jit = jax.jit(env.reset)
