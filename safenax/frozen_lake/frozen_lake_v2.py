@@ -224,7 +224,13 @@ class FrozenLakeV2(environment.Environment):
 
         new_state = EnvState(pos=next_pos, time=new_time)
 
-        return self.get_obs(new_state, params), new_state, reward, done, {"cost": cost}
+        return (
+            self.get_obs(new_state, params),
+            new_state,
+            reward,
+            done,
+            {"cost": cost, "tile_type": tile_type},
+        )
 
     def reset_env(
         self,
