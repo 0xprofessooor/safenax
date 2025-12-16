@@ -1,4 +1,4 @@
-"""JAX-compatible FrozenLake environment following the gymnax interface."""
+"""JAX-compatible FrozenLakeV1 environment following the gymnax interface."""
 
 from typing import Optional, Tuple, Union, List
 
@@ -69,7 +69,7 @@ MAPS = {
 }
 
 
-class FrozenLake(environment.Environment):
+class FrozenLakeV1(environment.Environment):
     """
     JAX-compatible FrozenLake environment.
 
@@ -81,7 +81,7 @@ class FrozenLake(environment.Environment):
     def __init__(
         self,
         map_name: str = "4x4",
-        desc: Optional[chex.Array] = None,
+        desc: Optional[jax.Array] = None,
         is_slippery: bool = True,
         success_rate: float = 1.0 / 3.0,
         reward_schedule: Tuple[float, float, float] = (1.0, 0.0, 0.0),
@@ -250,9 +250,9 @@ def make_frozen_lake(
     is_slippery: bool = True,
     success_rate: float = 1.0 / 3.0,
     reward_schedule: Tuple[float, float, float] = (1.0, 0.0, 0.0),
-) -> FrozenLake:
+) -> FrozenLakeV1:
     """Factory function to easier initialization."""
-    return FrozenLake(
+    return FrozenLakeV1(
         map_name=map_name,
         is_slippery=is_slippery,
         success_rate=success_rate,
