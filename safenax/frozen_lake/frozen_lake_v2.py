@@ -87,7 +87,7 @@ class FrozenLakeV2(environment.Environment):
        - Risk: Deterministically expensive, but safe.
 
     2. Thin Ice ('T', formerly Holes):
-       - Represents a dangerous shortcut, prone to cracking or falling but can glide over with little effort. 
+       - Represents a dangerous shortcut, prone to cracking or falling but can glide over with little effort.
        - Cost: Low Mean (e.g., 1.5), High Variance Shocks (e.g. std=4.35) (ice cracks).
        - Risk: Usually cheap to traverse, but prone to random, catastrophic cost spikes (cracking ice).
 
@@ -213,11 +213,7 @@ class FrozenLakeV2(environment.Environment):
         is_shock = jax.random.bernoulli(rng_cost, p=params.thin_shock_prob)
         cost_thin = params.thin_cost_base + (is_shock * params.thin_shock_val)
 
-        cost = jnp.select(
-            [is_goal, is_thin],
-            [0.0,     cost_thin],
-            default=cost_safe
-        )
+        cost = jnp.select([is_goal, is_thin], [0.0, cost_thin], default=cost_safe)
 
         # 4. Update State
         # Time limit truncation is handled in Gymnax wrappers usually,
