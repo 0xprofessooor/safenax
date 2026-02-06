@@ -28,7 +28,7 @@ class LogWrapper(GymnaxWrapper):
         self, key: jax.Array, params: environment.EnvParams | None = None
     ) -> tuple[jax.Array, LogEnvState]:
         obs, env_state = self._env.reset(key, params)
-        state = LogEnvState(env_state, 0, 0, 0, 0, 0, 0)
+        state = LogEnvState(env_state, 0.0, 0.0, 0, 0.0, 0.0, 0)
         return obs, state
 
     @partial(jax.jit, static_argnames=("self",))
@@ -60,13 +60,13 @@ class LogWrapper(GymnaxWrapper):
         new_episode_length = state.episode_lengths + 1
         state = LogEnvState(
             env_state=env_state,
-            episode_returns=new_episode_return * (1 - done),
-            episode_cost_returns=new_episode_cost_return * (1 - done),
+            episode_returns=new_episode_return * (1.0 - done),
+            episode_cost_returns=new_episode_cost_return * (1.0 - done),
             episode_lengths=new_episode_length * (1 - done),
-            returned_episode_returns=state.returned_episode_returns * (1 - done)
+            returned_episode_returns=state.returned_episode_returns * (1.0 - done)
             + new_episode_return * done,
             returned_episode_cost_returns=state.returned_episode_cost_returns
-            * (1 - done)
+            * (1.0 - done)
             + new_episode_cost_return * done,
             returned_episode_lengths=state.returned_episode_lengths * (1 - done)
             + new_episode_length * done,
