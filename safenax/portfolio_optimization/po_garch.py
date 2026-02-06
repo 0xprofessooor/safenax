@@ -64,6 +64,11 @@ class EnvParams:
     garch_params: Dict[str, GARCHParams]  # GARCH params for each asset
 
 
+class ObsType(Enum):
+    EASY = "easy"
+    MARKET = "market"
+
+
 @jax.jit
 def _sample_garch(carry, x):
     """
@@ -125,6 +130,7 @@ class PortfolioOptimizationGARCH(Environment):
         step_size: int = 1,
         num_samples: int = 1_000_000,
         num_trajectories: int = 1,
+        obs_type: ObsType = ObsType.MARKET,
     ):
         """
         Initialize GARCH portfolio environment.
@@ -142,6 +148,7 @@ class PortfolioOptimizationGARCH(Environment):
         self.step_size = step_size
         self.num_samples = num_samples
         self.num_trajectories = num_trajectories
+        self.obs_type = obs_type
 
         # Store individual GARCH params for default_params property
         self._garch_params = {name: garch_params[name] for name in self.asset_names}
@@ -241,25 +248,28 @@ class PortfolioOptimizationGARCH(Environment):
             dtype=jnp.float32,
         )
 
-    def observation_space(self, params: EnvParams) -> spaces.Box:
-        """Observation: recent returns and volatilities for all assets."""
-        # num_garch_params = (
-        #    self.num_assets * 2
-        #    + self.num_assets * self.vec_params.alpha.shape[1]
-        #    + self.num_assets * self.vec_params.beta.shape[1]
-        # )
-        # obs_shape = (
-        #    self.num_assets
-        #    + 1
-        #    + self.step_size * self.num_assets * 2
-        #    + num_garch_params,
-        # )
+    def _obs_space_market(self, params: EnvParams) -> spaces.Box:
+        obs_shape = (self.num_assets,)
+        return spaces.Box(
+            low=-jnp.inf, high=jnp.inf, shape=obs_shape, dtype=jnp.float32
+        )
+
+    def _obs_space_easy(self, params: EnvParams) -> spaces.Box:
         obs_shape = (self.num_assets * 2,)
         return spaces.Box(
             low=-jnp.inf, high=jnp.inf, shape=obs_shape, dtype=jnp.float32
         )
 
-    def get_obs_easy(self, state: EnvState, params: EnvParams) -> jax.Array:
+    def observation_space(self, params: EnvParams) -> spaces.Box:
+        """Return observation space based on configured observation type."""
+        if self.obs_type == ObsType.EASY:
+            return self._obs_space_easy(params)
+        elif self.obs_type == ObsType.MARKET:
+            return self._obs_space_market(params)
+        else:
+            raise ValueError(f"Unknown observation type: {self.obs_type}")
+
+    def _get_obs_easy(self, state: EnvState, params: EnvParams) -> jax.Array:
         next_time = state.time + self.step_size
         # Index into the correct trajectory: (num_trajectories, num_samples, num_assets)
         # Use dynamic_slice for JIT compatibility
@@ -274,7 +284,22 @@ class PortfolioOptimizationGARCH(Environment):
         obs = jnp.concatenate([next_vol.flatten(), mu.flatten()])
         return obs
 
-    def get_obs(self, state: EnvState, params: EnvParams) -> jax.Array:
+    def _get_obs_market(self, state: EnvState, params: EnvParams) -> jax.Array:
+        # Extract recent returns and volatilities from pre-generated path
+        start_time_idx = jnp.maximum(0, state.time - self.step_size + 1)
+
+        # Index into correct trajectory using dynamic_slice
+        log_returns_window = jax.lax.dynamic_slice(
+            self.log_returns,
+            (state.trajectory_id, start_time_idx, 0),
+            (1, self.step_size, self.num_assets),
+        ).squeeze(0)  # Remove trajectory dimension
+
+        step_log_return = log_returns_window.sum(axis=0)
+
+        return step_log_return
+
+    def _get_obs_full(self, state: EnvState, params: EnvParams) -> jax.Array:
         """Get observation from current state."""
         # Extract recent returns and volatilities from pre-generated path
         start_time_idx = jnp.maximum(0, state.time - self.step_size + 1)
@@ -309,6 +334,15 @@ class PortfolioOptimizationGARCH(Environment):
             ]
         )
         return obs
+
+    def get_obs(self, state: EnvState, params: EnvParams) -> jax.Array:
+        """Get observation based on configured observation type."""
+        if self.obs_type == ObsType.EASY:
+            return self._get_obs_easy(state, params)
+        elif self.obs_type == ObsType.MARKET:
+            return self._get_obs_market(state, params)
+        else:
+            raise ValueError(f"Unknown observation type: {self.obs_type}")
 
     def is_terminal(self, state: EnvState, params: EnvParams) -> jax.Array:
         """Check if episode is done."""
@@ -393,7 +427,7 @@ class PortfolioOptimizationGARCH(Environment):
             total_value=new_total_value,
         )
 
-        obs = self.get_obs_easy(next_state, params)
+        obs = self.get_obs(next_state, params)
         done = self.is_terminal(next_state, params)
         info = {"cost": -reward}
         return obs, next_state, reward, done, info
@@ -448,7 +482,7 @@ class PortfolioOptimizationGARCH(Environment):
             values=values,
             total_value=jnp.sum(values),
         )
-        obs = self.get_obs_easy(state, params)
+        obs = self.get_obs(state, params)
         return obs, state
 
     def plot_garch(self, trajectory_id: int = 0):
