@@ -242,8 +242,8 @@ class PortfolioOptimizationGARCH(Environment):
     def action_space(self, params: EnvParams) -> spaces.Box:
         """Action space: portfolio weights (including cash)."""
         return spaces.Box(
-            low=-jnp.inf,
-            high=jnp.inf,
+            low=-10.0,
+            high=10.0,
             shape=(self.num_assets + 1,),  # +1 for cash
             dtype=jnp.float32,
         )
