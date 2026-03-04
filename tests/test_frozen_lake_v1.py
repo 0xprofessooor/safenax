@@ -308,3 +308,77 @@ def test_cost_signal(
     _, state, _, _, info = step_jit(key, state, 1, params_deterministic)
 
     assert info["cost"] == 1.0, "Cost should be 1 when entering a hole"
+
+
+def test_expected_reward_fn_deterministic(
+    env: FrozenLakeV1, params_deterministic: EnvParams
+):
+    """
+    Test the analytic expected reward function in a deterministic setting.
+    Map Layout:
+      S(0) F(1)
+      H(2) G(3)
+    """
+    # Custom schedule for clear math: Goal=10.0, Hole=-5.0, Frozen=0.0
+    params = params_deterministic.replace(reward_schedule=jnp.array([10.0, -5.0, 0.0]))
+
+    obs = jnp.array(0, dtype=jnp.int32)  # Start at Pos 0
+    dummy_next_obs = jnp.array(0)  # Should be ignored by the function
+
+    # 1. Action: 100% Down (towards Hole)
+    action_down = jnp.array([0.0, 1.0, 0.0, 0.0])
+    reward_down = env.reward_fn(obs, action_down, dummy_next_obs, params)
+    assert jnp.isclose(reward_down, -5.0)
+
+    # 2. Action: 100% Right (towards Frozen)
+    action_right = jnp.array([0.0, 0.0, 1.0, 0.0])
+    reward_right = env.reward_fn(obs, action_right, dummy_next_obs, params)
+    assert jnp.isclose(reward_right, 0.0)
+
+    # 3. Action: 50/50 blend (Soft Action repamaterization check)
+    action_mixed = jnp.array([0.0, 0.5, 0.5, 0.0])
+    reward_mixed = env.reward_fn(obs, action_mixed, dummy_next_obs, params)
+    assert jnp.isclose(reward_mixed, -2.5)  # 0.5 * -5.0 + 0.5 * 0.0
+
+
+def test_expected_reward_fn_slippery_and_batched(
+    env: FrozenLakeV1, params_slippery: EnvParams
+):
+    """
+    Test the analytic expected reward function with slippery physics and vmap batching.
+    Map Layout:
+      S(0) F(1)
+      H(2) G(3)
+    Success rate: 0.5 (Failures split 0.25 / 0.25 to perpendicular directions)
+    """
+    params = params_slippery.replace(reward_schedule=jnp.array([10.0, -5.0, 0.0]))
+
+    dummy_next_obs = jnp.array(0)
+
+    # We will test two distinct states simultaneously to verify vmap broadcasting
+    batch_obs = jnp.array([0, 1], dtype=jnp.int32)
+
+    # Intend to move Down from both states
+    batch_action = jnp.array(
+        [
+            [0.0, 1.0, 0.0, 0.0],  # From Pos 0
+            [0.0, 1.0, 0.0, 0.0],  # From Pos 1
+        ]
+    )
+
+    batch_reward_fn = jax.vmap(env.reward_fn, in_axes=(0, 0, None, None))
+    batch_reward = batch_reward_fn(batch_obs, batch_action, dummy_next_obs, params)
+
+    # --- Math Verification for Pos 0 (Start) ---
+    # Intended Down (1): Hole(2) -> Reward -5.0 (Prob 0.5)
+    # Slip Left (0): Wall/Start(0) -> Reward 0.0 (Prob 0.25)
+    # Slip Right (2): Frozen(1) -> Reward 0.0 (Prob 0.25)
+    # Expected Expected = (0.5 * -5.0) + 0 + 0 = -2.5
+    assert jnp.isclose(batch_reward[0], -2.5)
+
+    # --- Math Verification for Pos 1 (Frozen, Top Right) ---
+    # Intended Down (1): Goal(3) -> Reward 10.0 (Prob 0.5)
+    # Slip Left (0): Start(0) -> Reward 0.0 (Prob 0.25)
+    # Slip Right (2): Wall/Frozen(1) -> Reward 0.0 (Prob 0.25)
+    # Expected Reward = (0.5 * 10.0) + 0 + 0 = 5.0
+    assert jnp.isclose(batch_reward[1], 5.0)

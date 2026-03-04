@@ -9,6 +9,7 @@ from safenax.frozen_lake.frozen_lake_v2 import (
     TILE_FROZEN,
     TILE_THIN,
     TILE_GOAL,
+    TILE_START,
 )
 
 # Fix random key for reproducibility
@@ -165,3 +166,93 @@ def test_termination(env, params):
 
     assert next_state.time == 1
     assert done == True
+
+
+def test_expected_reward_fn_deterministic(env, params):
+    """
+    Test the analytic expected reward function without slippery dynamics.
+    Map Layout:
+      S(0) F(1)
+      T(2) G(3)
+    """
+    # Create a deterministic 2x2 map
+    desc = jnp.array(
+        [[TILE_START, TILE_FROZEN], [TILE_THIN, TILE_GOAL]], dtype=jnp.int32
+    )
+
+    # Custom schedule for clear math: Goal=10.0, Thin=-5.0, Frozen=0.0
+    custom_params = params.replace(
+        desc=desc,
+        nrow=2,
+        ncol=2,
+        is_slippery=False,
+        success_rate=1.0,
+        reward_schedule=jnp.array([10.0, -5.0, 0.0]),
+    )
+
+    obs = jnp.array(0, dtype=jnp.int32)  # Start at Pos 0
+    dummy_next_obs = jnp.array(0)  # Ignored by marginalization
+
+    # 1. Action: 100% Down (towards Thin Ice)
+    action_down = jnp.array([0.0, 1.0, 0.0, 0.0])
+    reward_down = env.reward_fn(obs, action_down, dummy_next_obs, custom_params)
+    assert jnp.isclose(reward_down, -5.0)
+
+    # 2. Action: 100% Right (towards Frozen Ice)
+    action_right = jnp.array([0.0, 0.0, 1.0, 0.0])
+    reward_right = env.reward_fn(obs, action_right, dummy_next_obs, custom_params)
+    assert jnp.isclose(reward_right, 0.0)
+
+    # 3. Action: 50/50 blend (Soft Action Reparameterization Check)
+    action_mixed = jnp.array([0.0, 0.5, 0.5, 0.0])
+    reward_mixed = env.reward_fn(obs, action_mixed, dummy_next_obs, custom_params)
+    assert jnp.isclose(reward_mixed, -2.5)
+
+
+def test_expected_reward_fn_slippery_and_batched(env, params):
+    """
+    Test analytic expected reward with slippery physics and vmap batching.
+    Map Layout:
+      S(0) F(1)
+      T(2) G(3)
+    Success rate: 0.5 (Failures split 0.25 / 0.25 to perpendicular directions)
+    """
+    desc = jnp.array(
+        [[TILE_START, TILE_FROZEN], [TILE_THIN, TILE_GOAL]], dtype=jnp.int32
+    )
+
+    custom_params = params.replace(
+        desc=desc,
+        nrow=2,
+        ncol=2,
+        is_slippery=True,
+        success_rate=0.5,
+        reward_schedule=jnp.array([10.0, -5.0, 0.0]),
+    )
+
+    dummy_next_obs = jnp.array(0)
+
+    # Test two distinct states simultaneously to verify vmap matrix broadcasting
+    batch_obs = jnp.array([0, 1], dtype=jnp.int32)
+
+    # Intend to move Down from both Pos 0 and Pos 1
+    batch_action = jnp.array([[0.0, 1.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]])
+
+    batch_reward_fn = jax.vmap(env.reward_fn, in_axes=(0, 0, None, None))
+    batch_reward = batch_reward_fn(
+        batch_obs, batch_action, dummy_next_obs, custom_params
+    )
+
+    # --- Math Verification for Pos 0 (Start) ---
+    # Intended Down (1): Thin(2) -> Reward -5.0 (Prob 0.5)
+    # Slip Left (0): Wall/Start(0) -> Reward 0.0 (Prob 0.25)
+    # Slip Right (2): Frozen(1) -> Reward 0.0 (Prob 0.25)
+    # Expected Reward = (0.5 * -5.0) + 0 + 0 = -2.5
+    assert jnp.isclose(batch_reward[0], -2.5)
+
+    # --- Math Verification for Pos 1 (Frozen, Top Right) ---
+    # Intended Down (1): Goal(3) -> Reward 10.0 (Prob 0.5)
+    # Slip Left (0): Start(0) -> Reward 0.0 (Prob 0.25)
+    # Slip Right (2): Wall/Frozen(1) -> Reward 0.0 (Prob 0.25)
+    # Expected Reward = (0.5 * 10.0) + 0 + 0 = 5.0
+    assert jnp.isclose(batch_reward[1], 5.0)
