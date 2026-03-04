@@ -115,6 +115,65 @@ class FrozenLakeV1(environment.Environment):
             max_steps_in_episode=self.max_steps,
         )
 
+    def reward_fn(
+        self, obs: jax.Array, action: jax.Array, next_obs: jax.Array, params: EnvParams
+    ) -> jax.Array:
+        """
+        Analytically computes the expected reward: E[R(s, a, s')].
+
+        Note: Even though the template signature provides `next_obs` (s'), we
+        deliberately ignore it to marginalize over the stochastic slip dynamics.
+        This eliminates environmental variance and provides a mathematically
+        perfect gradient.
+        """
+        # 1. Recover position from observation
+        pos = jnp.int32(obs)
+        row = pos // params.ncol
+        col = pos % params.ncol
+
+        # 2. Compute next positions for ALL 4 base directions simultaneously
+        dr = jnp.array([0, 1, 0, -1])
+        dc = jnp.array([-1, 0, 1, 0])
+
+        new_row = row[..., None] + dr
+        new_col = col[..., None] + dc
+
+        # Clip to ensure we stay within the grid
+        new_row = jnp.clip(new_row, 0, params.nrow - 1)
+        new_col = jnp.clip(new_col, 0, params.ncol - 1)
+
+        # 3. Look up tile types for all possible adjacent squares
+        tile_types = params.desc[new_row, new_col]
+
+        is_goal = tile_types == TILE_GOAL
+        is_hole = tile_types == TILE_HOLE
+
+        # 4. Calculate raw deterministic rewards for those tiles
+        # Reward Schedule: [Goal, Hole, Frozen/Start] -> [0, 1, 2] index
+        tile_idx = jnp.where(is_goal, 0, jnp.where(is_hole, 1, 2))
+        raw_rewards = params.reward_schedule[tile_idx]
+
+        # 5. Apply Environment Stochasticity (The Marginalization Step)
+        def apply_slip(raw_vals):
+            fail_prob = (1.0 - params.success_rate) / 2.0
+            left_slip = jnp.roll(raw_vals, shift=1, axis=-1)
+            right_slip = jnp.roll(raw_vals, shift=-1, axis=-1)
+            return (
+                (params.success_rate * raw_vals)
+                + (fail_prob * left_slip)
+                + (fail_prob * right_slip)
+            )
+
+        expected_R_per_action = jax.lax.select(
+            params.is_slippery, apply_slip(raw_rewards), raw_rewards
+        )
+
+        # 6. Differentiable Action Blending
+        # Dot product of the continuous `soft_action` probability vector and expected rewards.
+        expected_reward = jnp.sum(action * expected_R_per_action, axis=-1)
+
+        return expected_reward
+
     def step_env(
         self,
         key: chex.PRNGKey,
