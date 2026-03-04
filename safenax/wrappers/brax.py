@@ -38,6 +38,18 @@ class BraxToGymnaxWrapper:
     def default_params(self) -> EnvParams:
         return EnvParams()
 
+    def reward_fn(
+        self,
+        obs: jax.Array,
+        action: jax.Array,
+        next_obs: jax.Array,
+        params: Optional[EnvParams] = None,
+    ) -> jax.Array:
+        """
+        Exposes the fully differentiable Brax reward function to the CPO agent.
+        """
+        return self._env.reward_fn(obs, action, next_obs)
+
     def step(
         self,
         key: PRNGKey,

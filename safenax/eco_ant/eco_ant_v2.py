@@ -25,6 +25,42 @@ class EcoAntV2(Ant):
     def name(self) -> str:
         return "EcoAnt-v2"
 
+    def reward_fn(
+        self, obs: jax.Array, action: jax.Array, next_obs: jax.Array
+    ) -> jax.Array:
+        """
+        Analytic, fully differentiable reward function for Model-Based RL.
+        Calculates the exact reward using only the observable state space.
+        """
+        # 1. Forward Reward
+        # The physics engine calculated velocity as (x1 - x0) / dt.
+        # The observation builder placed this exact value at index 13.
+        forward_reward = 0.5 * (obs[..., 13] + next_obs[..., 13])
+
+        # 2. Healthy Reward
+        # Torso Z-coordinate is at index 0.
+        z_pos = next_obs[..., 0]
+        min_z, max_z = self._healthy_z_range
+
+        is_healthy = jnp.where(z_pos < min_z, 0.0, 1.0)
+        is_healthy = jnp.where(z_pos > max_z, 0.0, is_healthy)
+
+        if self._terminate_when_unhealthy:
+            healthy_reward = jnp.full_like(forward_reward, self._healthy_reward)
+        else:
+            healthy_reward = self._healthy_reward * is_healthy
+
+        # 3. Control Cost
+        ctrl_cost = self._ctrl_cost_weight * jnp.sum(jnp.square(action), axis=-1)
+
+        # Contact cost is 0.0 in your current implementation
+        contact_cost = 0.0
+
+        # Total Expected Reward
+        reward = forward_reward + healthy_reward - ctrl_cost - contact_cost
+
+        return reward
+
     def step(self, state: State, action: jax.Array) -> State:
         # 1. RETRIEVE BATTERY FROM CURRENT OBSERVATION
         current_battery_pct = state.obs[-1]
