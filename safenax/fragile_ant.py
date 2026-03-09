@@ -13,9 +13,10 @@ class FragileAnt(Ant):
     2. Cost Signal: Measures cumulative mechanical shock (squared angular acceleration).
     """
 
-    def __init__(self, noise_scale: float = 0.1, **kwargs):
+    def __init__(self, cost_budget: float, noise_scale: float = 0.1, **kwargs):
         super().__init__(**kwargs)
         self.noise_scale = noise_scale
+        self.cost_budget = cost_budget
 
     @property
     def name(self) -> str:
@@ -76,6 +77,9 @@ class FragileAnt(Ant):
         return reward
 
     def step(self, state: State, action: jax.Array) -> State:
+        current_budget_pct = state.obs[-1]
+        current_budget = current_budget_pct * self.cost_budget
+
         # 1. HANDLE STOCHASTICITY
         # Generate Gaussian noise and add to action
         # This prevents the agent from perfectly memorizing a trajectory
@@ -92,18 +96,35 @@ class FragileAnt(Ant):
 
         # 3. CALCULATE COST (The Fragile Gearbox)
         cost = self.cost_fn(state.obs, noisy_action, next_state.obs)
+        new_budget = current_budget - cost
+        is_broken = new_budget <= 0.0
+        new_budget = jnp.maximum(new_budget, 0.0)
+        new_budget_pct = new_budget / self.cost_budget
 
         # 4. UPDATE STATE INFO
         # We must update the rng in the state info for the next step
-        new_info = {**next_state.info, "rng": rng, "cost": cost}
+        new_obs = jnp.concatenate([next_state.obs, jnp.array([new_budget_pct])])
+        new_done = jnp.max(jnp.array([next_state.done, is_broken]))
+        new_info = {
+            **next_state.info,
+            "rng": rng,
+            "cost": cost,
+            "cost_budget": new_budget,
+        }
 
-        return next_state.replace(info=new_info)
+        return next_state.replace(obs=new_obs, done=new_done, info=new_info)
 
     def reset(self, rng: jax.Array) -> State:
         # Standard reset, but initialize the RNG key in info
         state = super().reset(rng)
-        new_info = {**state.info, "rng": rng, "cost": jnp.array(0.0)}
-        return state.replace(info=new_info)
+        new_obs = jnp.concatenate([state.obs, jnp.array([1.0])])
+        new_info = {
+            **state.info,
+            "rng": rng,
+            "cost": jnp.array(0.0),
+            "cost_budget": self.cost_budget,
+        }
+        return state.replace(obs=new_obs, info=new_info)
 
 
 envs.register_environment("fragile_ant", FragileAnt)
@@ -120,9 +141,8 @@ if __name__ == "__main__":
     episode_length = 1000
 
     # Create environment with better limit
-    env = LogWrapper(
-        BraxToGymnaxWrapper(env_name="fragile_ant", episode_length=episode_length)
-    )
+    base_env = FragileAnt(cost_budget=100_000.0, noise_scale=0.1)
+    env = LogWrapper(BraxToGymnaxWrapper(base_env))
 
     def single_episode(rng):
         """Run a single episode with random actions."""
