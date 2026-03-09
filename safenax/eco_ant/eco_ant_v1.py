@@ -25,6 +25,15 @@ class EcoAntV1(Ant):
     def name(self) -> str:
         return "EcoAnt-v1"
 
+    def cost_fn(
+        self, obs: jax.Array, action: jax.Array, next_obs: jax.Array
+    ) -> jax.Array:
+        """
+        Cost function that returns 1.0 if the energy used exceeds the battery limit.
+        """
+        cost = jnp.where(next_obs[-1] == 1.0, 1.0, 0.0)
+        return cost
+
     def reward_fn(
         self, obs: jax.Array, action: jax.Array, next_obs: jax.Array
     ) -> jax.Array:

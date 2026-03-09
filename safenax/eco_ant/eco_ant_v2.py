@@ -25,6 +25,15 @@ class EcoAntV2(Ant):
     def name(self) -> str:
         return "EcoAnt-v2"
 
+    def cost_fn(
+        self, obs: jax.Array, action: jax.Array, next_obs: jax.Array
+    ) -> jax.Array:
+        """
+        Cost function that returns the energy used at each step.
+        """
+        energy_used = jnp.sum(jnp.square(action)) * 0.5
+        return energy_used
+
     def reward_fn(
         self, obs: jax.Array, action: jax.Array, next_obs: jax.Array
     ) -> jax.Array:
