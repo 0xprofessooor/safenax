@@ -10,17 +10,70 @@ class FragileAnt(Ant):
 
     Modifications:
     1. Stochasticity: Adds Gaussian noise to actions to simulate motor imperfection.
-    2. Cost Signal: Returns a cost of 1.0 if any joint velocity exceeds the 'gearbox_limit'.
+    2. Cost Signal: Measures cumulative mechanical shock (squared angular acceleration).
     """
 
-    def __init__(self, gearbox_limit: float = 2.0, noise_scale: float = 0.1, **kwargs):
+    def __init__(self, noise_scale: float = 0.1, **kwargs):
         super().__init__(**kwargs)
-        self.gearbox_limit = gearbox_limit
         self.noise_scale = noise_scale
 
     @property
     def name(self) -> str:
         return "FragileAnt"
+
+    def cost_fn(
+        self, obs: jax.Array, action: jax.Array, next_obs: jax.Array
+    ) -> jax.Array:
+        """
+        Measures the absolute change in angular velocity (acceleration/impacts).
+        """
+        # Indices 19 through 26 hold the angular velocities of the 8 hinges
+        current_joint_vels = obs[..., 19:27]
+        next_joint_vels = next_obs[..., 19:27]
+
+        # Acceleration = delta Velocity
+        joint_accelerations = next_joint_vels - current_joint_vels
+
+        # The cost is the total square shock experienced by all joints this step
+        shock_cost = jnp.sum(jnp.square(joint_accelerations), axis=-1)
+
+        return shock_cost
+
+    def reward_fn(
+        self, obs: jax.Array, action: jax.Array, next_obs: jax.Array
+    ) -> jax.Array:
+        """
+        Analytic, fully differentiable reward function for Model-Based RL.
+        Calculates the exact reward using only the observable state space.
+        """
+        # 1. Forward Reward
+        # The physics engine calculated velocity as (x1 - x0) / dt.
+        # The observation builder placed this exact value at index 13.
+        forward_reward = 0.5 * (obs[..., 13] + next_obs[..., 13])
+
+        # 2. Healthy Reward
+        # Torso Z-coordinate is at index 0.
+        z_pos = next_obs[..., 0]
+        min_z, max_z = self._healthy_z_range
+
+        is_healthy = jnp.where(z_pos < min_z, 0.0, 1.0)
+        is_healthy = jnp.where(z_pos > max_z, 0.0, is_healthy)
+
+        if self._terminate_when_unhealthy:
+            healthy_reward = jnp.full_like(forward_reward, self._healthy_reward)
+        else:
+            healthy_reward = self._healthy_reward * is_healthy
+
+        # 3. Control Cost
+        ctrl_cost = self._ctrl_cost_weight * jnp.sum(jnp.square(action), axis=-1)
+
+        # Contact cost is 0.0 in your current implementation
+        contact_cost = 0.0
+
+        # Total Expected Reward
+        reward = forward_reward + healthy_reward - ctrl_cost - contact_cost
+
+        return reward
 
     def step(self, state: State, action: jax.Array) -> State:
         # 1. HANDLE STOCHASTICITY
@@ -37,17 +90,8 @@ class FragileAnt(Ant):
         # Pass the noisy action to the physics engine
         next_state = super().step(state, noisy_action)
 
-        # 3. CALCULATE VaR COST (The Fragile Gearbox)
-        # We want to ignore the Torso velocity (running speed) and only penalize the limbs.
-        pipeline_state = next_state.pipeline_state
-        limb_velocities = pipeline_state.xd.vel[1:]  # Skip torso, get limb velocities
-
-        # Check if ANY limb velocity exceeds the limit
-        max_vel = jnp.max(jnp.abs(limb_velocities))
-
-        # Binary Cost: 1.0 if limit violated, 0.0 otherwise
-        is_violation = max_vel > self.gearbox_limit
-        cost = jnp.where(is_violation, 1.0, 0.0)
+        # 3. CALCULATE COST (The Fragile Gearbox)
+        cost = self.cost_fn(state.obs, noisy_action, next_state.obs)
 
         # 4. UPDATE STATE INFO
         # We must update the rng in the state info for the next step

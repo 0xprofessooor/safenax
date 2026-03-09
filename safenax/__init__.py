@@ -1,8 +1,5 @@
 """safenax - Cost constrained environments with a gymnax interface."""
 
-# Import to trigger environment registration
-import safenax.fragile_ant  # noqa: F401
-
 from safenax.fragile_ant import FragileAnt
 from safenax.portfolio_optimization import (
     PortfolioOptimizationGARCH,
