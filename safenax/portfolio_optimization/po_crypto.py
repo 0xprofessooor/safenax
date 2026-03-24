@@ -1,11 +1,14 @@
 from typing import Dict, Tuple
 from enum import Enum
+import os
 from gymnax.environments.environment import Environment, EnvParams, EnvState
 from gymnax.environments import spaces
 from flax import struct
 import polars as pl
 import jax
 from jax import numpy as jnp
+from jaxopt import ProjectedGradient
+from jaxopt.projection import projection_non_negative
 
 
 class BinanceFeeTier(Enum):
@@ -52,7 +55,9 @@ class EnvParams:
 
 
 class PortfolioOptimizationCrypto(Environment):
-    def __init__(self, data_paths: Dict[str, str], step_size: int = 3600):
+    def __init__(
+        self, data_paths: Dict[str, str], step_size: int = 1, window_size: int = 50
+    ):
         super().__init__()
         data_dict = {key: load_binance_klines(path) for key, path in data_paths.items()}
         self.assets = sorted(data_dict.keys())
@@ -60,6 +65,10 @@ class PortfolioOptimizationCrypto(Environment):
             [data_dict[asset] for asset in self.assets], axis=1
         )  # shape (num_rows, num_assets, num_features)
         self.step_size = step_size
+        self.window_size = window_size
+
+        print(f"Loaded data for assets: {self.assets}")
+        print(f"Data shape: {self.data.shape} (time, assets, features)")
 
     @property
     def name(self) -> str:
@@ -77,22 +86,22 @@ class PortfolioOptimizationCrypto(Environment):
 
     def action_space(self, params: EnvParams) -> spaces.Box:
         return spaces.Box(
-            low=-jnp.inf,
-            high=jnp.inf,
+            low=0.0,
+            high=1.0,
             shape=(self.data.shape[1] + 1,),
             dtype=jnp.float32,
         )
 
     def observation_space(self, params: EnvParams) -> spaces.Box:
-        obs_shape = (self.step_size * self.data.shape[1] * self.data.shape[2],)
+        obs_shape = (self.window_size * self.data.shape[1] * self.data.shape[2],)
         return spaces.Box(
             low=-jnp.inf, high=jnp.inf, shape=obs_shape, dtype=jnp.float32
         )
 
     def get_obs(self, state: EnvState, params: EnvParams) -> jax.Array:
-        start_time_idx = jnp.maximum(0, state.time - self.step_size + 1)
+        start_time_idx = jnp.maximum(0, state.time - self.window_size + 1)
         start_indices = (start_time_idx, 0, 0)
-        slice_sizes = (self.step_size, self.data.shape[1], self.data.shape[2])
+        slice_sizes = (self.window_size, self.data.shape[1], self.data.shape[2])
         step_data = jax.lax.dynamic_slice(self.data, start_indices, slice_sizes)
         return step_data.flatten()
 
@@ -110,7 +119,7 @@ class PortfolioOptimizationCrypto(Environment):
         )
 
         # normalize action
-        weights = jax.nn.softmax(action)
+        weights = action
 
         ############### UPDATE PORTFOLIO WITH FEES ###############
         values = state.holdings * prices
@@ -169,7 +178,7 @@ class PortfolioOptimizationCrypto(Environment):
     ) -> Tuple[jax.Array, EnvState]:
         episode_length = params.max_steps * self.step_size
         max_start = self.data.shape[0] - episode_length
-        min_start = self.step_size
+        min_start = self.window_size
         time = jax.random.randint(key, (), min_start, max_start)
         prices = jnp.concatenate(
             [jnp.array([1.0]), self.data[time, :, KLineFeatures.CLOSE.value]]
@@ -190,7 +199,15 @@ class PortfolioOptimizationCrypto(Environment):
 
 
 def load_binance_klines(filepath: str) -> jax.Array:
-    df = pl.read_csv(filepath)
+    if os.path.isdir(filepath):
+        files = sorted(
+            os.path.join(filepath, f)
+            for f in os.listdir(filepath)
+            if f.endswith(".parquet")
+        )
+        df = pl.concat([pl.read_parquet(f) for f in files]).sort("open_time")
+    else:
+        df = pl.read_parquet(filepath)
     data = df.select(
         (pl.col("close")),
         (pl.col("open")),
@@ -205,16 +222,103 @@ def load_binance_klines(filepath: str) -> jax.Array:
 
 
 if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    import time
+
     data_paths = {
-        "BTC": "data/BTCUSDT_2024-10-15_2025-10-15_1s.csv",
-        "ETH": "data/ETHUSDT_2024-10-15_2025-10-15_1s.csv",
+        "BTC": "data/binance/BTCUSDT/klines/",
+        "ETH": "data/binance/ETHUSDT/klines/",
+        "SOL": "data/binance/SOLUSDT/klines/",
+        "BNB": "data/binance/BNBUSDT/klines/",
+        "DOGE": "data/binance/DOGEUSDT/klines/",
+        "ADA": "data/binance/ADAUSDT/klines/",
+        "LINK": "data/binance/LINKUSDT/klines/",
+        "XRP": "data/binance/XRPUSDT/klines/",
+        "XTZ": "data/binance/XTZUSDT/klines/",
     }
-    env = PortfolioOptimizationCrypto(data_paths=data_paths)
-    key = jax.random.PRNGKey(0)
-    obs, state = env.reset(key, env.default_params)
-    print(state)
-    action = jnp.array([1, 0.000003, 0.0000002])  # Example action
-    next_obs, next_state, reward, done, info = env.step_env(
-        key, state, action, env.default_params
+
+    window_size = 1440
+    env = PortfolioOptimizationCrypto(
+        data_paths=data_paths, step_size=1, window_size=window_size
     )
-    print(next_state)
+    params = env.default_params.replace(
+        max_steps=1000000, taker_fee=BinanceFeeTier.REGULAR.value, trade_threshold=10.0
+    )
+    num_assets = len(env.assets)
+    num_features = env.data.shape[2]
+
+    @jax.jit
+    def max_sharpe_action(obs: jax.Array) -> jax.Array:
+        """Compute max-Sharpe weights using Projected Gradient Descent for strict long-only bounds."""
+        # 1. Extract and calculate Mu and Sigma
+        close = obs.reshape(window_size, num_assets, num_features)[
+            :, :, KLineFeatures.CLOSE.value
+        ]
+        log_returns = jnp.diff(jnp.log(close), axis=0)
+        mu_crypto = jnp.mean(log_returns, axis=0)
+        centered = log_returns - mu_crypto
+
+        # Calculate Covariance (Sigma)
+        sigma_crypto = (centered.T @ centered) / (log_returns.shape[0] - 1)
+
+        # 2. Setup Cash + Crypto arrays
+        n = num_assets + 1
+        mu = jnp.concatenate([jnp.array([0.0]), mu_crypto])
+
+        # Add a tiny bit of regularization to the diagonal to keep the matrix stable
+        sigma = jnp.zeros((n, n)).at[0, 0].set(1e-8)
+        sigma = sigma.at[1:, 1:].set(sigma_crypto + jnp.eye(num_assets) * 1e-8)
+
+        # 3. Define the Quadratic Programming objective function
+        def objective(w, sigma, mu):
+            # f(w) = 0.5 * w^T * Sigma * w - mu^T * w
+            variance_penalty = 0.5 * jnp.dot(w, jnp.dot(sigma, w))
+            return variance_penalty - jnp.dot(mu, w)
+
+        # 4. Initialize the JAXopt Projected Gradient solver
+        # It strictly enforces the projection_non_negative constraint (w >= 0) at every step
+        pg = ProjectedGradient(
+            fun=objective, projection=projection_non_negative, maxiter=100, tol=1e-4
+        )
+
+        # 5. Run the optimizer from an equal-weight starting guess
+        w_init = jnp.ones(n) / n
+        state = pg.run(w_init, sigma=sigma, mu=mu)
+
+        # Extract the optimal weights
+        w_optimal = state.params
+
+        # 6. Normalize so the weights sum to exactly 1.0 (100% of portfolio)
+        w_final = w_optimal / (jnp.sum(w_optimal) + 1e-10)
+
+        return w_final
+
+    key = jax.random.PRNGKey(0)
+    obs, state = env.reset(key, params)
+
+    portfolio_values = [float(state.total_value)]
+    done = False
+    start = time.perf_counter()
+    while not done:
+        action = max_sharpe_action(obs)
+        key, step_key = jax.random.split(key)
+        obs, state, reward, done, info = env.step(step_key, state, action, params)
+        if not done:
+            portfolio_values.append(float(state.total_value))
+    end = time.perf_counter()
+    print(f"{params.max_steps / (end - start):.2f} steps/s")
+
+    print(f"Final portfolio value: {portfolio_values[-1]:.2f}")
+    print(
+        f"Total return: {(portfolio_values[-1] / portfolio_values[0] - 1) * 100:.2f}%"
+    )
+
+    plt.figure(figsize=(12, 5))
+    plt.plot(portfolio_values)
+    plt.xlabel("Step")
+    plt.ylabel("Portfolio Value (USDT)")
+    plt.title(f"Markowitz Max-Sharpe Portfolio ({window_size}-step lookback)")
+    plt.tight_layout()
+    plt.grid(True)
+    plt.savefig("markowitz_portfolio.png")
+    plt.show()
