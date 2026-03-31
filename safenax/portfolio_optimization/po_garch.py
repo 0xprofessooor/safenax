@@ -33,19 +33,10 @@ class GARCHParams:
 
 
 @struct.dataclass
-class VecGARCHParams:
-    omega: jax.Array  # Constant term in variance equation
-    alpha: jax.Array  # ARCH coefficients (length q)
-    beta: jax.Array  # GARCH coefficients (length p)
-    mu: jax.Array  # Mean return
-    initial_price: jax.Array  # Starting price for the asset
-
-
-@struct.dataclass
 class EnvState:
     step: int
     time: int
-    trajectory_id: int  # Which trajectory this environment is using
+    path_id: int  # Which path this environment is using
     prices: jax.Array  # Current prices for all assets
     log_returns: jax.Array  # Current returns for all assets
     volatilities: jax.Array  # Current volatilities for all assets
@@ -62,6 +53,9 @@ class EnvParams:
     gas_fee: float
     trade_threshold: float
     garch_params: Dict[str, GARCHParams]  # GARCH params for each asset
+    all_prices: jax.Array
+    all_vols: jax.Array
+    all_log_returns: jax.Array
 
 
 class ObsType(Enum):
@@ -99,7 +93,7 @@ def _sample_garch(carry, x):
             - new_price: (num_assets,) array of prices for time t
     """
     # Unpack carry
-    params: VecGARCHParams = carry[0]
+    params: GARCHParams = carry[0]
     garch_state: Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray] = carry[1]
     last_vols, last_returns, last_price = garch_state
     noise = x  # (num_assets,)
@@ -131,11 +125,9 @@ class PortfolioOptimizationGARCH(Environment):
 
     def __init__(
         self,
-        rng: jax.Array,
-        garch_params: Dict[str, GARCHParams],
         step_size: int = 1,
         num_samples: int = 1_000_000,
-        num_trajectories: int = 1,
+        num_paths: int = 1,
         obs_type: ObsType = ObsType.MARKET,
         cost_type: CostType = CostType.NEGATIVE_RETURN,
     ):
@@ -147,22 +139,22 @@ class PortfolioOptimizationGARCH(Environment):
             garch_params: Dict mapping asset names to GARCHParams
             step_size: Step size for sampling (if subsampling the data)
             num_samples: Total number of time steps to generate
-            num_trajectories: Number of parallel trajectories to simulate
+            num_paths: Number of parallel paths to simulate
             obs_type: Type of observation to return (easy, market, full)
             cost_type: Type of cost to compute (negative return or variance)
         """
         super().__init__()
-        self.asset_names = sorted(garch_params.keys())
-        self.num_assets = len(self.asset_names)
         self.step_size = step_size
         self.num_samples = num_samples
-        self.num_trajectories = num_trajectories
+        self.num_paths = num_paths
         self.obs_type = obs_type
         self.cost_type = cost_type
 
-        # Store individual GARCH params for default_params property
-        self._garch_params = {name: garch_params[name] for name in self.asset_names}
-
+    def sample_paths(self, rng: jax.Array, params: EnvParams) -> EnvParams:
+        """Sample GARCH paths for all assets and store in params."""
+        garch_params = params.garch_params
+        asset_names = list(garch_params.keys())
+        num_assets = len(asset_names)
         # Stack GARCHParams into vectorized arrays for parallel processing
         # Each field becomes (num_assets, ...) shaped
         max_p = max(len(gp.beta) for gp in garch_params.values())
@@ -170,19 +162,19 @@ class PortfolioOptimizationGARCH(Environment):
 
         # Pad alpha and beta to same length for vectorization
         omega_vec = jnp.array(
-            [garch_params[name].omega for name in self.asset_names], dtype=jnp.float32
+            [garch_params[name].omega for name in asset_names], dtype=jnp.float32
         )
         mu_vec = jnp.array(
-            [garch_params[name].mu for name in self.asset_names], dtype=jnp.float32
+            [garch_params[name].mu for name in asset_names], dtype=jnp.float32
         )
         initial_price_vec = jnp.array(
-            [garch_params[name].initial_price for name in self.asset_names],
+            [garch_params[name].initial_price for name in asset_names],
             dtype=jnp.float32,
         )
 
         alpha_list = []
         beta_list = []
-        for name in self.asset_names:
+        for name in asset_names:
             gp = garch_params[name]
             # Pad with zeros to max length
             alpha_padded = jnp.pad(gp.alpha, (0, max_q - len(gp.alpha)))
@@ -193,7 +185,7 @@ class PortfolioOptimizationGARCH(Environment):
         alpha_vec = jnp.stack(alpha_list, axis=0)  # (num_assets, max_q)
         beta_vec = jnp.stack(beta_list, axis=0)  # (num_assets, max_p)
 
-        self.vec_params = VecGARCHParams(
+        self.vec_params = GARCHParams(
             omega=omega_vec,
             alpha=alpha_vec,
             beta=beta_vec,
@@ -215,24 +207,27 @@ class PortfolioOptimizationGARCH(Environment):
 
         initial_state = (initial_vols, initial_returns, initial_prices)
 
-        # Generate multiple independent trajectories using vmap
-        # Generate all noise: (num_trajectories, num_samples, num_assets)
-        rng_keys = jax.random.split(rng, num_trajectories)
+        # Generate multiple independent paths using vmap
+        # Generate all noise: (num_paths, num_samples, num_assets)
+        rng_keys = jax.random.split(rng, self.num_paths)
         all_noise = jax.vmap(
-            lambda key: jax.random.normal(key, (num_samples, self.num_assets))
+            lambda key: jax.random.normal(key, (self.num_samples, num_assets))
         )(rng_keys)
 
-        # Vectorize GARCH simulation over trajectories
-        def simulate_one_trajectory(noise):
-            """Run GARCH simulation for one trajectory."""
+        # Vectorize GARCH simulation over paths
+        def simulate_one_path(noise):
+            """Run GARCH simulation for one path."""
             _, outputs = jax.lax.scan(
                 _sample_garch, (self.vec_params, initial_state), noise
             )
             return outputs  # (returns, volatilities, prices)
 
-        # Run all trajectories in parallel: (num_trajectories, num_samples, num_assets)
-        outputs = jax.vmap(simulate_one_trajectory)(all_noise)
-        self.log_returns, self.volatilities, self.prices = outputs
+        # Run all paths in parallel: (num_paths, num_samples, num_assets)
+        log_returns, volatilities, prices = jax.vmap(simulate_one_path)(all_noise)
+
+        return params.replace(
+            all_log_returns=log_returns, all_vols=volatilities, all_prices=prices
+        )
 
     @property
     def name(self) -> str:
@@ -246,37 +241,44 @@ class PortfolioOptimizationGARCH(Environment):
             taker_fee=BinanceFeeTier.OFF.value,
             gas_fee=0.0,
             trade_threshold=0.0,
-            garch_params=self._garch_params,
+            garch_params={},
+            all_prices=jnp.array([]),
+            all_vols=jnp.array([]),
+            all_log_returns=jnp.array([]),
         )
 
     def action_space(self, params: EnvParams) -> spaces.Box:
         """Action space: portfolio weights (including cash)."""
+        num_assets = len(params.garch_params)
         return spaces.Box(
             low=-10.0,
             high=10.0,
-            shape=(self.num_assets + 1,),  # +1 for cash
+            shape=(num_assets + 1,),  # +1 for cash
             dtype=jnp.float32,
         )
 
     def _obs_space_market(self, params: EnvParams) -> spaces.Box:
-        obs_shape = (self.num_assets,)
+        num_assets = len(params.garch_params)
+        obs_shape = (num_assets,)
         return spaces.Box(
             low=-jnp.inf, high=jnp.inf, shape=obs_shape, dtype=jnp.float32
         )
 
     def _obs_space_easy(self, params: EnvParams) -> spaces.Box:
-        obs_shape = (self.num_assets * 2,)
+        num_assets = len(params.garch_params)
+        obs_shape = (num_assets * 2,)
         return spaces.Box(
             low=-jnp.inf, high=jnp.inf, shape=obs_shape, dtype=jnp.float32
         )
 
     def _obs_space_full(self, params: EnvParams) -> spaces.Box:
+        num_assets = len(params.garch_params)
         obs_dim = (
             1  # log(total_value)
-            + (self.num_assets + 1)  # normalized holdings (weights)
+            + (num_assets + 1)  # normalized holdings (weights)
             + 3  # fees: taker_fee, gas_fee, trade_threshold
-            + self.step_size * self.num_assets * 2  # returns + volatilities
-            + self.num_assets * 4  # GARCH params: mu, omega, alpha, beta
+            + self.step_size * num_assets * 2  # returns + volatilities
+            + num_assets * 4  # GARCH params: mu, omega, alpha, beta
         )
         return spaces.Box(
             low=-jnp.inf, high=jnp.inf, shape=(obs_dim,), dtype=jnp.float32
@@ -294,30 +296,32 @@ class PortfolioOptimizationGARCH(Environment):
             raise ValueError(f"Unknown observation type: {self.obs_type}")
 
     def _get_obs_easy(self, state: EnvState, params: EnvParams) -> jax.Array:
+        num_assets = len(params.garch_params)
         next_time = state.time + self.step_size
-        # Index into the correct trajectory: (num_trajectories, num_samples, num_assets)
+        # Index into the correct path: (num_paths, num_samples, num_assets)
         # Use dynamic_slice for JIT compatibility
-        traj_vols = jax.lax.dynamic_slice(
-            self.volatilities,
-            (state.trajectory_id, next_time, 0),
-            (1, 1, self.num_assets),
+        path_vols = jax.lax.dynamic_slice(
+            params.all_vols,
+            (state.path_id, next_time, 0),
+            (1, 1, num_assets),
         )
-        next_vol = traj_vols.squeeze()  # (num_assets,)
+        next_vol = path_vols.squeeze()  # (num_assets,)
         mu = self.vec_params.mu  # (num_assets,)
 
         obs = jnp.concatenate([next_vol.flatten(), mu.flatten()])
         return obs
 
     def _get_obs_market(self, state: EnvState, params: EnvParams) -> jax.Array:
+        num_assets = len(params.garch_params)
         # Extract recent returns and volatilities from pre-generated path
         start_time_idx = jnp.maximum(0, state.time - self.step_size + 1)
 
-        # Index into correct trajectory using dynamic_slice
+        # Index into correct path using dynamic_slice
         log_returns_window = jax.lax.dynamic_slice(
-            self.log_returns,
-            (state.trajectory_id, start_time_idx, 0),
-            (1, self.step_size, self.num_assets),
-        ).squeeze(0)  # Remove trajectory dimension
+            params.all_log_returns,
+            (state.path_id, start_time_idx, 0),
+            (1, self.step_size, num_assets),
+        ).squeeze(0)  # Remove path dimension
 
         step_log_return = log_returns_window.sum(axis=0)
 
@@ -325,20 +329,21 @@ class PortfolioOptimizationGARCH(Environment):
 
     def _get_obs_full(self, state: EnvState, params: EnvParams) -> jax.Array:
         """Get observation from current state."""
+        num_assets = len(params.garch_params)
         # Extract recent returns and volatilities from pre-generated path
         start_time_idx = jnp.maximum(0, state.time - self.step_size + 1)
 
-        # Index into correct trajectory using dynamic_slice
+        # Index into correct path using dynamic_slice
         log_returns_window = jax.lax.dynamic_slice(
-            self.log_returns,
-            (state.trajectory_id, start_time_idx, 0),
-            (1, self.step_size, self.num_assets),
+            params.all_log_returns,
+            (state.path_id, start_time_idx, 0),
+            (1, self.step_size, num_assets),
         ).squeeze(0)  # (step_size, num_assets)
 
         vols_window = jax.lax.dynamic_slice(
-            self.volatilities,
-            (state.trajectory_id, start_time_idx, 0),
-            (1, self.step_size, self.num_assets),
+            params.all_vols,
+            (state.path_id, start_time_idx, 0),
+            (1, self.step_size, num_assets),
         ).squeeze(0)  # (step_size, num_assets)
 
         mu = self.vec_params.mu
@@ -384,24 +389,25 @@ class PortfolioOptimizationGARCH(Environment):
         self, key: jax.Array, state: EnvState, action: jax.Array, params: EnvParams
     ) -> tuple[jax.Array, EnvState, jax.Array, jax.Array, dict]:
         """Execute one environment step with pre-generated GARCH prices."""
+        num_assets = len(params.garch_params)
         time = state.time + self.step_size
 
-        # Index into correct trajectory using dynamic_slice
-        traj_prices = jax.lax.dynamic_slice(
-            self.prices, (state.trajectory_id, time, 0), (1, 1, self.num_assets)
+        # Index into correct path using dynamic_slice
+        path_prices = jax.lax.dynamic_slice(
+            params.all_prices, (state.path_id, time, 0), (1, 1, num_assets)
         ).squeeze()  # (num_assets,)
 
-        traj_log_returns = jax.lax.dynamic_slice(
-            self.log_returns, (state.trajectory_id, time, 0), (1, 1, self.num_assets)
+        path_log_returns = jax.lax.dynamic_slice(
+            params.all_log_returns, (state.path_id, time, 0), (1, 1, num_assets)
         ).squeeze()
 
-        traj_volatilities = jax.lax.dynamic_slice(
-            self.volatilities, (state.trajectory_id, time, 0), (1, 1, self.num_assets)
+        path_volatilities = jax.lax.dynamic_slice(
+            params.all_vols, (state.path_id, time, 0), (1, 1, num_assets)
         ).squeeze()
 
-        prices = jnp.concatenate([jnp.array([1.0]), traj_prices])
-        log_returns = jnp.concatenate([jnp.array([0.0]), traj_log_returns])
-        volatilities = jnp.concatenate([jnp.array([0.0]), traj_volatilities])
+        prices = jnp.concatenate([jnp.array([1.0]), path_prices])
+        log_returns = jnp.concatenate([jnp.array([0.0]), path_log_returns])
+        volatilities = jnp.concatenate([jnp.array([0.0]), path_volatilities])
 
         # Normalize action to portfolio weights
         weights = jax.nn.softmax(action)
@@ -446,7 +452,7 @@ class PortfolioOptimizationGARCH(Environment):
         reward = jnp.log(new_total_value) - jnp.log(state.total_value)
 
         if self.cost_type == CostType.VARIANCE:
-            cost = jnp.sum((asset_weights**2) * (traj_volatilities**2))
+            cost = jnp.sum((asset_weights**2) * (path_volatilities**2))
         elif self.cost_type == CostType.NEGATIVE_RETURN:
             cost = -reward
         else:
@@ -455,7 +461,7 @@ class PortfolioOptimizationGARCH(Environment):
         next_state = EnvState(
             step=state.step + 1,
             time=time,
-            trajectory_id=state.trajectory_id,
+            path_id=state.path_id,
             prices=prices,
             log_returns=log_returns,
             volatilities=volatilities,
@@ -476,42 +482,45 @@ class PortfolioOptimizationGARCH(Environment):
         Reset environment and sample from pre-generated GARCH paths.
 
         Args:
-            key: Random key for sampling trajectory and start time
+            key: Random key for sampling path and start time
             params: Environment parameters
         """
-        # Sample trajectory randomly
-        key, traj_key, time_key = jax.random.split(key, 3)
-        traj_id = jax.random.randint(traj_key, (), 0, self.num_trajectories)
+        num_assets = len(params.garch_params)
+        # Sample path randomly
+        key, path_key, time_key = jax.random.split(key, 3)
+        path_id = jax.random.randint(path_key, (), 0, self.num_paths)
 
         episode_length = params.max_steps * self.step_size
-        max_start = self.prices.shape[1] - episode_length  # shape[1] is num_samples
+        max_start = (
+            params.all_prices.shape[1] - episode_length
+        )  # shape[1] is num_samples
         min_start = self.step_size
         time = jax.random.randint(time_key, (), min_start, max_start)
 
-        # Index into correct trajectory using dynamic_slice
-        traj_prices = jax.lax.dynamic_slice(
-            self.prices, (traj_id, time, 0), (1, 1, self.num_assets)
+        # Index into correct path using dynamic_slice
+        path_prices = jax.lax.dynamic_slice(
+            params.all_prices, (path_id, time, 0), (1, 1, num_assets)
         ).squeeze()
 
-        traj_log_returns = jax.lax.dynamic_slice(
-            self.log_returns, (traj_id, time, 0), (1, 1, self.num_assets)
+        path_log_returns = jax.lax.dynamic_slice(
+            params.all_log_returns, (path_id, time, 0), (1, 1, num_assets)
         ).squeeze()
 
-        traj_volatilities = jax.lax.dynamic_slice(
-            self.volatilities, (traj_id, time, 0), (1, 1, self.num_assets)
+        path_volatilities = jax.lax.dynamic_slice(
+            params.all_vols, (path_id, time, 0), (1, 1, num_assets)
         ).squeeze()
 
-        prices = jnp.concatenate([jnp.array([1.0]), traj_prices])
-        log_returns = jnp.concatenate([jnp.array([0.0]), traj_log_returns])
-        volatilities = jnp.concatenate([jnp.array([0.0]), traj_volatilities])
+        prices = jnp.concatenate([jnp.array([1.0]), path_prices])
+        log_returns = jnp.concatenate([jnp.array([0.0]), path_log_returns])
+        volatilities = jnp.concatenate([jnp.array([0.0]), path_volatilities])
 
-        holdings = jnp.zeros(self.num_assets + 1)
+        holdings = jnp.zeros(num_assets + 1)
         holdings = holdings.at[0].set(params.initial_cash)
         values = holdings * prices
         state = EnvState(
             step=0,
             time=time,
-            trajectory_id=traj_id,
+            path_id=path_id,
             prices=prices,
             log_returns=log_returns,
             volatilities=volatilities,
@@ -522,28 +531,32 @@ class PortfolioOptimizationGARCH(Environment):
         obs = self.get_obs(state, params)
         return obs, state
 
-    def plot_garch(self, trajectory_id: int = 0):
+    def plot_garch(self, params: EnvParams, path_id: int = 0):
         """
         Plot the generated GARCH price paths, returns, and volatilities for all assets.
 
         Args:
-            trajectory_id: Which trajectory to plot (0 to num_trajectories-1)
+            params: Environment parameters
+            path_id: Which path to plot (0 to num_paths-1)
         """
-        traj_id = trajectory_id % self.num_trajectories
+        asset_names = list(params.garch_params.keys())
+        path_id = path_id % self.num_paths
         fig, axes = plt.subplots(3, 1, figsize=(14, 10))
 
         # Plot prices
-        for i, name in enumerate(self.asset_names):
-            axes[0].plot(self.prices[traj_id, :, i], label=f"{name}")
-        axes[0].set_title(f"GARCH-Simulated Asset Prices (Trajectory {traj_id})")
+        for i, name in enumerate(asset_names):
+            axes[0].plot(params.all_prices[path_id, :, i], label=f"{name}")
+        axes[0].set_title(f"GARCH-Simulated Asset Prices (Path {path_id})")
         axes[0].set_xlabel("Time")
         axes[0].set_ylabel("Price")
         axes[0].legend(loc="upper right")
         axes[0].grid(True, alpha=0.3)
 
         # Plot returns
-        for i, name in enumerate(self.asset_names):
-            axes[1].plot(self.log_returns[traj_id, :, i], label=f"{name}", alpha=0.7)
+        for i, name in enumerate(asset_names):
+            axes[1].plot(
+                params.all_log_returns[path_id, :, i], label=f"{name}", alpha=0.7
+            )
         axes[1].set_title("GARCH Log Returns")
         axes[1].set_xlabel("Time")
         axes[1].set_ylabel("Log Return")
@@ -552,8 +565,8 @@ class PortfolioOptimizationGARCH(Environment):
         axes[1].axhline(y=0, color="k", linestyle="--", linewidth=0.5)
 
         # Plot volatilities
-        for i, name in enumerate(self.asset_names):
-            axes[2].plot(self.volatilities[traj_id, :, i], label=f"{name}")
+        for i, name in enumerate(asset_names):
+            axes[2].plot(params.all_vols[path_id, :, i], label=f"{name}")
         axes[2].set_title("GARCH Conditional Volatilities")
         axes[2].set_xlabel("Time")
         axes[2].set_ylabel("Volatility")
@@ -565,13 +578,13 @@ class PortfolioOptimizationGARCH(Environment):
 
     def calibrate_var_params(
         self,
+        params: EnvParams,
         safe_asset: str,
         risky_asset: str,
         epsilon: float = 0.05,
-        params: EnvParams = None,
     ):
         """
-        Estimate VaR threshold (rho) using ALL pre-generated GARCH trajectories.
+        Estimate VaR threshold (rho) using ALL pre-generated GARCH paths.
 
         Computes the distribution of cumulative returns over episode length (max_steps)
         and estimates the epsilon-percentile (VaR) for both assets. The recommended rho
@@ -586,37 +599,35 @@ class PortfolioOptimizationGARCH(Environment):
         Returns:
             Tuple of (rho, var_safe, var_risky) - all as floats
         """
-        if params is None:
-            params = self.default_params
-
+        asset_names = list(params.garch_params.keys())
         # Episode length based on environment configuration
         horizon = params.max_steps * self.step_size
 
         # Get asset indices
-        safe_idx = self.asset_names.index(safe_asset)
-        risky_idx = self.asset_names.index(risky_asset)
+        safe_idx = asset_names.index(safe_asset)
+        risky_idx = asset_names.index(risky_asset)
 
-        # Get returns for ALL trajectories
-        # Shape: (num_trajectories, num_samples, num_assets)
-        log_returns_safe_all = self.log_returns[
+        # Get returns for ALL paths
+        # Shape: (num_paths, num_samples, num_assets)
+        log_returns_safe_all = params.all_log_returns[
             :, :, safe_idx
-        ]  # (num_trajectories, num_samples)
-        log_returns_risky_all = self.log_returns[
+        ]  # (num_paths, num_samples)
+        log_returns_risky_all = params.all_log_returns[
             :, :, risky_idx
-        ]  # (num_trajectories, num_samples)
+        ]  # (num_paths, num_samples)
 
-        # Calculate cumulative returns over episode-length windows for all trajectories
-        def compute_cumulative_returns(log_returns_traj):
-            """Compute sliding window cumulative returns for one trajectory."""
-            num_windows = log_returns_traj.shape[0] - horizon + 1
+        # Calculate cumulative returns over episode-length windows for all paths
+        def compute_cumulative_returns(log_returns_path):
+            """Compute sliding window cumulative returns for one path."""
+            num_windows = log_returns_path.shape[0] - horizon + 1
 
             # Create sliding windows
             cumulative_returns = jnp.array(
-                [log_returns_traj[i : i + horizon].sum() for i in range(num_windows)]
+                [log_returns_path[i : i + horizon].sum() for i in range(num_windows)]
             )
             return cumulative_returns
 
-        # Vectorize over all trajectories
+        # Vectorize over all paths
         cumulative_returns_safe = jax.vmap(compute_cumulative_returns)(
             log_returns_safe_all
         )
@@ -624,8 +635,8 @@ class PortfolioOptimizationGARCH(Environment):
             log_returns_risky_all
         )
 
-        # Flatten across all trajectories to get the full distribution
-        # Shape: (num_trajectories * num_windows,)
+        # Flatten across all paths to get the full distribution
+        # Shape: (num_paths * num_windows,)
         log_returns_safe = cumulative_returns_safe.flatten()
         log_returns_risky = cumulative_returns_risky.flatten()
 
@@ -636,10 +647,10 @@ class PortfolioOptimizationGARCH(Environment):
         var_risky = jnp.percentile(log_returns_risky, epsilon * 100)
 
         print(
-            f"\n--- Empirical VaR Results (Episode Length: {params.max_steps} steps, All {self.num_trajectories} Trajectories) ---"
+            f"\n--- Empirical VaR Results (Episode Length: {params.max_steps} steps, All {self.num_paths} Paths) ---"
         )
         print(
-            f"Total samples analyzed: {len(log_returns_safe):,} ({self.num_trajectories} trajectories × {len(log_returns_safe) // self.num_trajectories} windows)"
+            f"Total samples analyzed: {len(log_returns_safe):,} ({self.num_paths} paths × {len(log_returns_safe) // self.num_paths} windows)"
         )
         print(f"{safe_asset} {epsilon * 100}% VaR (log return): {float(var_safe):.6f}")
         print(
@@ -730,7 +741,7 @@ class PortfolioOptimizationGARCH(Environment):
             label=f"{risky_asset} VaR: {float(var_risky):.4f}",
         )
         axes[0].set_title(
-            f"Episode Cumulative Returns ({params.max_steps} steps)\n({self.num_trajectories:,} Trajectories, {epsilon * 100}% VaR)"
+            f"Episode Cumulative Returns ({params.max_steps} steps)\n({self.num_paths:,} Paths, {epsilon * 100}% VaR)"
         )
         axes[0].set_xlabel("Cumulative Return")
         axes[0].set_ylabel("Density")
@@ -823,22 +834,24 @@ if __name__ == "__main__":
     }
 
     env = PortfolioOptimizationGARCH(
-        rng,
-        garch_params,
-        num_trajectories=10_000,
+        num_paths=10_000,
         num_samples=1000,
     )
+    params = env.default_params.replace(garch_params=garch_params)
+    params = env.sample_paths(rng, params)
+    asset_names = list(garch_params.keys())
+    num_assets = len(asset_names)
 
-    # Plot first trajectory
-    env.plot_garch(trajectory_id=0)
+    # Plot first path
+    env.plot_garch(params, path_id=1)
 
     # Run a full episode with random actions using JAX scan (fast!)
     rng, reset_rng = jax.random.split(rng)
-    obs, state = env.reset(reset_rng, env.default_params)
+    obs, state = env.reset(reset_rng, params)
 
     max_steps = env.default_params.max_steps
-    appl_idx = env.asset_names.index("APPL") + 1
-    btc_idx = env.asset_names.index("BTC") + 1
+    appl_idx = asset_names.index("APPL") + 1
+    btc_idx = asset_names.index("BTC") + 1
 
     # Generate actions based on policy
     rng, action_rng = jax.random.split(rng)
@@ -846,7 +859,7 @@ if __name__ == "__main__":
     if args.policy == "random":
         # Random actions (unnormalized)
         action_keys = jax.random.split(action_rng, max_steps)
-        all_actions = jax.random.normal(action_keys[0], (max_steps, env.num_assets + 1))
+        all_actions = jax.random.normal(action_keys[0], (max_steps, num_assets + 1))
     elif args.policy == "hold_cash":
         # Hold 100% cash: [large, small, small]
         all_actions = jnp.tile(jnp.array([10.0, -10.0, -10.0]), (max_steps, 1))
@@ -866,7 +879,7 @@ if __name__ == "__main__":
         state, rng = carry
         rng, step_rng = jax.random.split(rng)
         obs, next_state, reward, done, info = env.step_env(
-            step_rng, state, action, env.default_params
+            step_rng, state, action, params
         )
         weights = jax.nn.softmax(action)
 
@@ -880,16 +893,16 @@ if __name__ == "__main__":
         return (next_state, rng), outputs
 
     # Run entire episode with scan (JIT-compiled, runs on GPU/TPU)
-    (final_state, _), trajectory = jax.lax.scan(scan_step, (state, rng), all_actions)
+    (final_state, _), path = jax.lax.scan(scan_step, (state, rng), all_actions)
 
     # Extract results
-    rewards = trajectory["reward"]
+    rewards = path["reward"]
     portfolio_values = jnp.concatenate(
-        [jnp.array([state.total_value]), trajectory["portfolio_value"]]
+        [jnp.array([state.total_value]), path["portfolio_value"]]
     )
-    cash_weights = trajectory["weights"][:, 0]
-    btc_weights = trajectory["weights"][:, btc_idx]
-    appl_weights = trajectory["weights"][:, appl_idx]
+    cash_weights = path["weights"][:, 0]
+    btc_weights = path["weights"][:, btc_idx]
+    appl_weights = path["weights"][:, appl_idx]
 
     # Calculate cumulative return
     cumulative_rewards = jnp.cumsum(rewards)
