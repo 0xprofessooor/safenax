@@ -3,7 +3,7 @@
 from safenax.fragile_ant import FragileAnt
 from safenax.portfolio_optimization import (
     PortfolioOptimizationGARCH,
-    PortfolioOptimizationCrypto,
+    PortfolioOptimizationBinance,
 )
 from safenax.frozen_lake import FrozenLakeV1, FrozenLakeV2
 from safenax.eco_ant import EcoAntV1, EcoAntV2
@@ -11,7 +11,7 @@ from safenax.eco_ant import EcoAntV1, EcoAntV2
 
 __all__ = [
     "FragileAnt",
-    "PortfolioOptimizationCrypto",
+    "PortfolioOptimizationBinance",
     "PortfolioOptimizationGARCH",
     "FrozenLakeV1",
     "FrozenLakeV2",

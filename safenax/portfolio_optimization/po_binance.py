@@ -54,7 +54,7 @@ class EnvParams:
     trade_threshold: float
 
 
-class PortfolioOptimizationCrypto(Environment):
+class PortfolioOptimizationBinance(Environment):
     def __init__(
         self, data_paths: Dict[str, str], step_size: int = 1, window_size: int = 50
     ):
@@ -72,7 +72,7 @@ class PortfolioOptimizationCrypto(Environment):
 
     @property
     def name(self) -> str:
-        return "PortfolioOptimizationCrypto-v0"
+        return "PO-Binance"
 
     @property
     def default_params(self) -> EnvParams:
@@ -238,7 +238,7 @@ if __name__ == "__main__":
     }
 
     window_size = 1440
-    env = PortfolioOptimizationCrypto(
+    env = PortfolioOptimizationBinance(
         data_paths=data_paths, step_size=1, window_size=window_size
     )
     params = env.default_params.replace(
