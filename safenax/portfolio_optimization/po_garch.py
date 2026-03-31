@@ -67,6 +67,12 @@ class EnvParams:
 class ObsType(Enum):
     EASY = "easy"
     MARKET = "market"
+    FULL = "full"
+
+
+class CostType(Enum):
+    NEGATIVE_RETURN = "negative_return"
+    VARIANCE = "variance"
 
 
 @jax.jit
@@ -131,6 +137,7 @@ class PortfolioOptimizationGARCH(Environment):
         num_samples: int = 1_000_000,
         num_trajectories: int = 1,
         obs_type: ObsType = ObsType.MARKET,
+        cost_type: CostType = CostType.NEGATIVE_RETURN,
     ):
         """
         Initialize GARCH portfolio environment.
@@ -141,6 +148,8 @@ class PortfolioOptimizationGARCH(Environment):
             step_size: Step size for sampling (if subsampling the data)
             num_samples: Total number of time steps to generate
             num_trajectories: Number of parallel trajectories to simulate
+            obs_type: Type of observation to return (easy, market, full)
+            cost_type: Type of cost to compute (negative return or variance)
         """
         super().__init__()
         self.asset_names = sorted(garch_params.keys())
@@ -149,6 +158,7 @@ class PortfolioOptimizationGARCH(Environment):
         self.num_samples = num_samples
         self.num_trajectories = num_trajectories
         self.obs_type = obs_type
+        self.cost_type = cost_type
 
         # Store individual GARCH params for default_params property
         self._garch_params = {name: garch_params[name] for name in self.asset_names}
@@ -260,12 +270,26 @@ class PortfolioOptimizationGARCH(Environment):
             low=-jnp.inf, high=jnp.inf, shape=obs_shape, dtype=jnp.float32
         )
 
+    def _obs_space_full(self, params: EnvParams) -> spaces.Box:
+        obs_dim = (
+            1  # log(total_value)
+            + (self.num_assets + 1)  # normalized holdings (weights)
+            + 3  # fees: taker_fee, gas_fee, trade_threshold
+            + self.step_size * self.num_assets * 2  # returns + volatilities
+            + self.num_assets * 4  # GARCH params: mu, omega, alpha, beta
+        )
+        return spaces.Box(
+            low=-jnp.inf, high=jnp.inf, shape=(obs_dim,), dtype=jnp.float32
+        )
+
     def observation_space(self, params: EnvParams) -> spaces.Box:
         """Return observation space based on configured observation type."""
         if self.obs_type == ObsType.EASY:
             return self._obs_space_easy(params)
         elif self.obs_type == ObsType.MARKET:
             return self._obs_space_market(params)
+        elif self.obs_type == ObsType.FULL:
+            return self._obs_space_full(params)
         else:
             raise ValueError(f"Unknown observation type: {self.obs_type}")
 
@@ -309,22 +333,26 @@ class PortfolioOptimizationGARCH(Environment):
             self.log_returns,
             (state.trajectory_id, start_time_idx, 0),
             (1, self.step_size, self.num_assets),
-        ).squeeze(0)  # Remove trajectory dimension
+        ).squeeze(0)  # (step_size, num_assets)
 
         vols_window = jax.lax.dynamic_slice(
             self.volatilities,
             (state.trajectory_id, start_time_idx, 0),
             (1, self.step_size, self.num_assets),
-        ).squeeze(0)
+        ).squeeze(0)  # (step_size, num_assets)
 
         mu = self.vec_params.mu
         omega = self.vec_params.omega
         alpha = self.vec_params.alpha
         beta = self.vec_params.beta
 
+        fees = jnp.array([params.taker_fee, params.gas_fee, params.trade_threshold])
+
         obs = jnp.concatenate(
             [
-                state.values,
+                jnp.array([jnp.log(state.total_value)]),
+                state.values / state.total_value,  # Normalize holdings by total value
+                fees,
                 log_returns_window.flatten(),
                 vols_window.flatten(),
                 mu.flatten(),
@@ -341,6 +369,8 @@ class PortfolioOptimizationGARCH(Environment):
             return self._get_obs_easy(state, params)
         elif self.obs_type == ObsType.MARKET:
             return self._get_obs_market(state, params)
+        elif self.obs_type == ObsType.FULL:
+            return self._get_obs_full(state, params)
         else:
             raise ValueError(f"Unknown observation type: {self.obs_type}")
 
@@ -415,6 +445,13 @@ class PortfolioOptimizationGARCH(Environment):
 
         reward = jnp.log(new_total_value) - jnp.log(state.total_value)
 
+        if self.cost_type == CostType.VARIANCE:
+            cost = jnp.sum((asset_weights**2) * (traj_volatilities**2))
+        elif self.cost_type == CostType.NEGATIVE_RETURN:
+            cost = -reward
+        else:
+            raise ValueError(f"Unknown cost type: {self.cost_type}")
+
         next_state = EnvState(
             step=state.step + 1,
             time=time,
@@ -429,7 +466,7 @@ class PortfolioOptimizationGARCH(Environment):
 
         obs = self.get_obs(next_state, params)
         done = self.is_terminal(next_state, params)
-        info = {"cost": -reward}
+        info = {"cost": cost}
         return obs, next_state, reward, done, info
 
     def reset_env(
@@ -918,5 +955,3 @@ if __name__ == "__main__":
 
     plt.tight_layout()
     plt.show()
-
-    env.calibrate_var_params(safe_asset="APPL", risky_asset="BTC", epsilon=0.05)
