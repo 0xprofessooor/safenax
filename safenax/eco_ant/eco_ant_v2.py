@@ -70,6 +70,81 @@ class EcoAntV2(Ant):
 
         return reward
 
+    def transition_fn(self, obs: jax.Array, action: jax.Array) -> jax.Array:
+        """Differentiable state transition function f(s, a) -> s'.
+
+        Implements a forward Euler integration of the EcoAnt dynamics.
+        Deterministic (no noise) for use in gradient-based MBRL.
+
+        Observation layout (27 base Ant + 1 battery = 28 total):
+            obs[0]     : torso z-position
+            obs[1:5]   : torso quaternion (w, x, y, z)
+            obs[5:13]  : joint angles (8)
+            obs[13:16] : torso linear velocity (vx, vy, vz)
+            obs[16:19] : torso angular velocity (ωx, ωy, ωz)
+            obs[19:27] : joint angular velocities (8)
+            obs[27]    : battery percentage
+        """
+        dt = self.dt
+
+        # Deterministic clip — no noise for differentiability
+        action = jnp.clip(action, -1.0, 1.0)
+
+        # --- Unpack observation ---
+        z_pos = obs[0:1]
+        quat = obs[1:5]  # (w, x, y, z)
+        q_joints = obs[5:13]
+        lin_vel = obs[13:16]  # (vx, vy, vz)
+        ang_vel = obs[16:19]  # (ωx, ωy, ωz)
+        qd_joints = obs[19:27]
+        battery_pct = obs[27]
+
+        # --- Joint dynamics (forward Euler) ---
+        # First 6 DOFs are the torso free joint; remainder are the 8 revolute joints
+        gear = self.sys.actuator.gear  # (8,)
+        damping = self.sys.dof.damping[6:]  # (8,)
+        joint_acc = gear * action - damping * qd_joints
+        next_qd_joints = qd_joints + joint_acc * dt
+        next_q_joints = q_joints + qd_joints * dt
+
+        # --- Torso dynamics ---
+        # Integrate z-position with z-velocity; x/y not in obs so omitted
+        next_z_pos = z_pos + lin_vel[2:3] * dt
+        # Linear and angular velocities: constant (contact/leg forces not modeled)
+        next_lin_vel = lin_vel
+        next_ang_vel = ang_vel
+        # Quaternion: first-order integration  q̇ = 0.5 · Ω(ω) · q
+        wx, wy, wz = ang_vel
+        qw, qx, qy, qz = quat
+        qdot = 0.5 * jnp.array(
+            [
+                -wx * qx - wy * qy - wz * qz,
+                wx * qw + wz * qy - wy * qz,
+                wy * qw - wz * qx + wx * qz,
+                wz * qw + wy * qx - wx * qy,
+            ]
+        )
+        next_quat = quat + qdot * dt
+        next_quat = next_quat / jnp.linalg.norm(next_quat)
+
+        # --- Battery update (analytical) ---
+        energy_used = jnp.sum(jnp.square(action)) * 0.5
+        new_battery = jnp.maximum(battery_pct * self.battery_limit - energy_used, 0.0)
+        new_battery_pct = new_battery / self.battery_limit
+
+        # --- Assemble next observation ---
+        return jnp.concatenate(
+            [
+                next_z_pos,
+                next_quat,
+                next_q_joints,
+                next_lin_vel,
+                next_ang_vel,
+                next_qd_joints,
+                jnp.array([new_battery_pct]),
+            ]
+        )
+
     def step(self, state: State, action: jax.Array) -> State:
         # 1. RETRIEVE BATTERY FROM CURRENT OBSERVATION
         current_battery_pct = state.obs[-1]

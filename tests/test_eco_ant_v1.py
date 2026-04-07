@@ -180,3 +180,65 @@ def test_wrapper_autoreset_logic(key: jax.Array):
     # D. The 'next_state' is the NEW alive state
     assert next_state.info["cost"] == 1.0
     assert next_state.info["battery"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# transition_fn tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def det_env():
+    """EcoAntV1 with no noise so step and transition_fn are directly comparable."""
+    return EcoAntV1(battery_limit=10.0, noise_scale=0.0)
+
+
+def test_transition_fn_output_shape(det_env: EcoAntV1, key: jax.Array):
+    """transition_fn output shape must match the observation from step."""
+    state = det_env.reset(key)
+    action = jnp.ones(det_env.action_size) * 0.5
+
+    predicted_obs = det_env.transition_fn(state.obs, action)
+    next_state = det_env.step(state, action)
+
+    assert predicted_obs.shape == next_state.obs.shape
+
+
+def test_transition_fn_battery_matches_step(det_env: EcoAntV1, key: jax.Array):
+    """With noise_scale=0 the battery component must match step exactly."""
+    state = det_env.reset(key)
+    action = jnp.ones(det_env.action_size) * 0.5
+
+    predicted_obs = det_env.transition_fn(state.obs, action)
+    next_state = det_env.step(state, action)
+
+    assert jnp.isclose(predicted_obs[-1], next_state.obs[-1]), (
+        f"transition_fn battery {predicted_obs[-1]:.6f} != "
+        f"step battery {next_state.obs[-1]:.6f}"
+    )
+
+
+def test_transition_fn_joint_angles_advance(det_env: EcoAntV1, key: jax.Array):
+    """Applying a positive action should produce non-zero joint angle change."""
+    state = det_env.reset(key)
+    action = jnp.ones(det_env.action_size)
+
+    predicted_obs = det_env.transition_fn(state.obs, action)
+
+    # Joint angles: obs[5:13], joint velocities: obs[19:27]
+    delta_q = predicted_obs[5:13] - state.obs[5:13]
+    # With a positive action and positive initial joint velocities (or zero),
+    # the change should be non-zero.
+    assert jnp.any(delta_q != 0.0)
+
+
+def test_transition_fn_is_differentiable(det_env: EcoAntV1, key: jax.Array):
+    """JAX must be able to differentiate transition_fn w.r.t. action."""
+    state = det_env.reset(key)
+    action = jnp.ones(det_env.action_size) * 0.5
+
+    grad_fn = jax.grad(lambda a: jnp.sum(det_env.transition_fn(state.obs, a)))
+    grads = grad_fn(action)
+
+    assert grads.shape == action.shape
+    assert not jnp.any(jnp.isnan(grads))

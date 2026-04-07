@@ -62,6 +62,17 @@ class BraxToGymnaxWrapper:
         """
         return self._env.cost_fn(obs, action, next_obs)
 
+    def transition_fn(
+        self,
+        obs: jax.Array,
+        action: jax.Array,
+        params: Optional[EnvParams] = None,
+    ) -> jax.Array:
+        """
+        Exposes the fully differentiable Brax transition function.
+        """
+        return self._env.transition_fn(obs, action)
+
     def step(
         self,
         key: PRNGKey,
