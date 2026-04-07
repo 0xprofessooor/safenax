@@ -28,7 +28,8 @@ dependencies = [
     "chex>=0.1.91",
     "flax>=0.12.1",
     "gymnax>=0.0.9",
-    "jax[cuda13]>=0.8.0",
+    "jax[cuda13]>=0.8.0; sys_platform == 'linux'",
+    "jax>=0.8.0; sys_platform != 'linux'",
     "matplotlib>=3.10.7",
     "polars>=1.35.2",
 ]
