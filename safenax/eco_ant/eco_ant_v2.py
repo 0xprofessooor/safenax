@@ -110,9 +110,40 @@ class EcoAntV2(Ant):
         # --- Torso dynamics ---
         # Integrate z-position with z-velocity; x/y not in obs so omitted
         next_z_pos = z_pos + lin_vel[2:3] * dt
-        # Linear and angular velocities: constant (contact/leg forces not modeled)
-        next_lin_vel = lin_vel
-        next_ang_vel = ang_vel
+
+        # Linear velocity: gravity + approximate ground contact
+        gravity = self.sys.gravity  # (3,) e.g. [0, 0, -9.81]
+
+        # Soft ground contact: legs act as a virtual spring-damper supporting
+        # the torso near the nominal standing height (~0.75 m).
+        nominal_z = 0.75
+        delta_z = nominal_z - z_pos[0]  # positive when below nominal
+
+        # Smooth contact activation centered below nominal so that at nominal
+        # height the support nearly equals gravity (sigmoid(5) ≈ 0.993).
+        contact = jax.nn.sigmoid(20.0 * (delta_z + 0.25))
+
+        # Spring restoring force (only pushes up when below nominal)
+        k_spring = 100.0  # effective spring stiffness / mass  [1/s^2]
+        spring_accel = k_spring * jnp.maximum(delta_z, 0.0)
+
+        # Ground reaction: balances gravity when in contact, plus spring
+        ground_accel_z = contact * (-gravity[2] + spring_accel)
+        lin_accel = gravity + jnp.array([0.0, 0.0, ground_accel_z])
+
+        # Horizontal friction when in contact (prevents drift)
+        horiz_damp = 1.0 - contact * 5.0 * dt
+        next_lin_vel = jnp.array(
+            [
+                lin_vel[0] * horiz_damp,
+                lin_vel[1] * horiz_damp,
+                lin_vel[2] + lin_accel[2] * dt,
+            ]
+        )
+
+        # Angular velocity: damp via contact friction and internal dissipation
+        ang_damp = 1.0 - contact * 10.0 * dt
+        next_ang_vel = ang_vel * ang_damp
         # Quaternion: first-order integration  q̇ = 0.5 · Ω(ω) · q
         wx, wy, wz = ang_vel
         qw, qx, qy, qz = quat
