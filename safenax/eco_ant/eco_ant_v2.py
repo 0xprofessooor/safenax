@@ -70,6 +70,16 @@ class EcoAntV2(Ant):
 
         return reward
 
+    def is_done(self, obs: jax.Array) -> jax.Array:
+        """
+        Termination condition based on torso height and battery depletion.
+        """
+        z_pos = obs[..., 0]
+        min_z, max_z = self._healthy_z_range
+        is_unhealthy = (z_pos < min_z) | (z_pos > max_z)
+        battery_dead = obs[..., -1] <= 0.0
+        return (is_unhealthy | battery_dead).astype(jnp.float32)
+
     def transition_fn(self, obs: jax.Array, action: jax.Array) -> jax.Array:
         """Differentiable state transition function f(s, a) -> s'.
 

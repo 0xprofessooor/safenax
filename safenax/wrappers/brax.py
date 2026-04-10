@@ -73,6 +73,9 @@ class BraxToGymnaxWrapper:
         """
         return self._env.transition_fn(obs, action)
 
+    def is_done(self, obs: jax.Array, params: Optional[EnvParams] = None) -> jax.Array:
+        return self._env.is_done(obs)
+
     def step(
         self,
         key: PRNGKey,
