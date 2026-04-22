@@ -7,8 +7,6 @@ from flax import struct
 import polars as pl
 import jax
 from jax import numpy as jnp
-from jaxopt import ProjectedGradient
-from jaxopt.projection import projection_non_negative
 
 
 class BinanceFeeTier(Enum):
@@ -86,8 +84,8 @@ class PortfolioOptimizationBinance(Environment):
 
     def action_space(self, params: EnvParams) -> spaces.Box:
         return spaces.Box(
-            low=0.0,
-            high=1.0,
+            low=-jnp.inf,
+            high=jnp.inf,
             shape=(self.data.shape[1] + 1,),
             dtype=jnp.float32,
         )
@@ -103,6 +101,20 @@ class PortfolioOptimizationBinance(Environment):
         start_indices = (start_time_idx, 0, 0)
         slice_sizes = (self.window_size, self.data.shape[1], self.data.shape[2])
         step_data = jax.lax.dynamic_slice(self.data, start_indices, slice_sizes)
+
+        # Get the first close price in the window for each asset
+        initial_close = step_data[0:1, :, KLineFeatures.CLOSE.value] + 1e-8
+
+        # Normalize Open, High, Low, and Close by the initial close price
+        for feature in [
+            KLineFeatures.OPEN,
+            KLineFeatures.HIGH,
+            KLineFeatures.LOW,
+            KLineFeatures.CLOSE,
+        ]:
+            norm_feature = step_data[:, :, feature.value] / initial_close
+            step_data = step_data.at[:, :, feature.value].set(norm_feature)
+
         return step_data.flatten()
 
     def is_terminal(self, state: EnvState, params: EnvParams) -> jax.Array:
@@ -119,7 +131,7 @@ class PortfolioOptimizationBinance(Environment):
         )
 
         # normalize action
-        weights = action
+        weights = jax.nn.softmax(action)
 
         ############### UPDATE PORTFOLIO WITH FEES ###############
         values = state.holdings * prices
@@ -170,7 +182,7 @@ class PortfolioOptimizationBinance(Environment):
         )
         obs = self.get_obs(next_state, params)
         done = self.is_terminal(next_state, params)
-        info = {"cost": -reward}
+        info = {"cost": jnp.maximum(0.0, -reward)}
         return obs, next_state, reward, done, info
 
     def reset_env(
@@ -219,106 +231,3 @@ def load_binance_klines(filepath: str) -> jax.Array:
     )
     data = data.to_jax()
     return data
-
-
-if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-    import time
-
-    data_paths = {
-        "BTC": "data/binance/BTCUSDT/klines/",
-        "ETH": "data/binance/ETHUSDT/klines/",
-        "SOL": "data/binance/SOLUSDT/klines/",
-        "BNB": "data/binance/BNBUSDT/klines/",
-        "DOGE": "data/binance/DOGEUSDT/klines/",
-        "ADA": "data/binance/ADAUSDT/klines/",
-        "LINK": "data/binance/LINKUSDT/klines/",
-        "XRP": "data/binance/XRPUSDT/klines/",
-        "XTZ": "data/binance/XTZUSDT/klines/",
-    }
-
-    window_size = 1440
-    env = PortfolioOptimizationBinance(
-        data_paths=data_paths, step_size=1, window_size=window_size
-    )
-    params = env.default_params.replace(
-        max_steps=1000000, taker_fee=BinanceFeeTier.REGULAR.value, trade_threshold=10.0
-    )
-    num_assets = len(env.assets)
-    num_features = env.data.shape[2]
-
-    @jax.jit
-    def max_sharpe_action(obs: jax.Array) -> jax.Array:
-        """Compute max-Sharpe weights using Projected Gradient Descent for strict long-only bounds."""
-        # 1. Extract and calculate Mu and Sigma
-        close = obs.reshape(window_size, num_assets, num_features)[
-            :, :, KLineFeatures.CLOSE.value
-        ]
-        log_returns = jnp.diff(jnp.log(close), axis=0)
-        mu_crypto = jnp.mean(log_returns, axis=0)
-        centered = log_returns - mu_crypto
-
-        # Calculate Covariance (Sigma)
-        sigma_crypto = (centered.T @ centered) / (log_returns.shape[0] - 1)
-
-        # 2. Setup Cash + Crypto arrays
-        n = num_assets + 1
-        mu = jnp.concatenate([jnp.array([0.0]), mu_crypto])
-
-        # Add a tiny bit of regularization to the diagonal to keep the matrix stable
-        sigma = jnp.zeros((n, n)).at[0, 0].set(1e-8)
-        sigma = sigma.at[1:, 1:].set(sigma_crypto + jnp.eye(num_assets) * 1e-8)
-
-        # 3. Define the Quadratic Programming objective function
-        def objective(w, sigma, mu):
-            # f(w) = 0.5 * w^T * Sigma * w - mu^T * w
-            variance_penalty = 0.5 * jnp.dot(w, jnp.dot(sigma, w))
-            return variance_penalty - jnp.dot(mu, w)
-
-        # 4. Initialize the JAXopt Projected Gradient solver
-        # It strictly enforces the projection_non_negative constraint (w >= 0) at every step
-        pg = ProjectedGradient(
-            fun=objective, projection=projection_non_negative, maxiter=100, tol=1e-4
-        )
-
-        # 5. Run the optimizer from an equal-weight starting guess
-        w_init = jnp.ones(n) / n
-        state = pg.run(w_init, sigma=sigma, mu=mu)
-
-        # Extract the optimal weights
-        w_optimal = state.params
-
-        # 6. Normalize so the weights sum to exactly 1.0 (100% of portfolio)
-        w_final = w_optimal / (jnp.sum(w_optimal) + 1e-10)
-
-        return w_final
-
-    key = jax.random.PRNGKey(0)
-    obs, state = env.reset(key, params)
-
-    portfolio_values = [float(state.total_value)]
-    done = False
-    start = time.perf_counter()
-    while not done:
-        action = max_sharpe_action(obs)
-        key, step_key = jax.random.split(key)
-        obs, state, reward, done, info = env.step(step_key, state, action, params)
-        if not done:
-            portfolio_values.append(float(state.total_value))
-    end = time.perf_counter()
-    print(f"{params.max_steps / (end - start):.2f} steps/s")
-
-    print(f"Final portfolio value: {portfolio_values[-1]:.2f}")
-    print(
-        f"Total return: {(portfolio_values[-1] / portfolio_values[0] - 1) * 100:.2f}%"
-    )
-
-    plt.figure(figsize=(12, 5))
-    plt.plot(portfolio_values)
-    plt.xlabel("Step")
-    plt.ylabel("Portfolio Value (USDT)")
-    plt.title(f"Markowitz Max-Sharpe Portfolio ({window_size}-step lookback)")
-    plt.tight_layout()
-    plt.grid(True)
-    plt.savefig("markowitz_portfolio.png")
-    plt.show()
