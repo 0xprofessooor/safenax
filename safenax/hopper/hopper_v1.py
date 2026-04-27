@@ -63,7 +63,8 @@ class HopperV1(Hopper):
         gear = self.sys.actuator.gear  # (3,)
         damping = self.sys.dof.damping[3:]  # (3,) — last 3 DOFs are hinges
         gravity = self.sys.gravity
-        n_substeps = int(round(self.dt / self.sys.opt.timestep))
+        # _n_frames is a Python int (constant at construction); avoids tracing.
+        n_substeps = self._n_frames
         sub_dt = self.dt / n_substeps
 
         # --- Unpack obs into mutable state ---
