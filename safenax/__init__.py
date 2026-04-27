@@ -7,6 +7,10 @@ from safenax.portfolio_optimization import (
 )
 from safenax.frozen_lake import FrozenLakeV1, FrozenLakeV2
 from safenax.eco_ant import EcoAntV1, EcoAntV2
+from safenax.pendulum import PendulumV1
+from safenax.mountain_car import MountainCarContinuousV0
+from safenax.hopper import HopperV1
+from safenax.half_cheetah import HalfCheetahV1
 
 
 __all__ = [
@@ -17,4 +21,8 @@ __all__ = [
     "FrozenLakeV2",
     "EcoAntV1",
     "EcoAntV2",
+    "PendulumV1",
+    "MountainCarContinuousV0",
+    "HopperV1",
+    "HalfCheetahV1",
 ]
