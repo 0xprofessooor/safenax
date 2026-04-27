@@ -91,31 +91,61 @@ class PortfolioOptimizationBinance(Environment):
         )
 
     def observation_space(self, params: EnvParams) -> spaces.Box:
-        obs_shape = (self.window_size * self.data.shape[1] * self.data.shape[2],)
+        num_assets = self.data.shape[1]
+
+        # 3 features (Close, Momentum, Buy Ratio) across the time window for all assets
+        window_features_size = 3 * self.window_size * num_assets
+
+        # 1 feature for the current drifted portfolio weights (assets + 1 for cash)
+        portfolio_weights_size = num_assets + 1
+
+        # Total flattened 1D array size
+        total_obs_size = window_features_size + portfolio_weights_size
+
         return spaces.Box(
-            low=-jnp.inf, high=jnp.inf, shape=obs_shape, dtype=jnp.float32
+            low=-jnp.inf, high=jnp.inf, shape=(total_obs_size,), dtype=jnp.float32
         )
 
     def get_obs(self, state: EnvState, params: EnvParams) -> jax.Array:
+        # Slice the rolling window
         start_time_idx = jnp.maximum(0, state.time - self.window_size + 1)
         start_indices = (start_time_idx, 0, 0)
         slice_sizes = (self.window_size, self.data.shape[1], self.data.shape[2])
         step_data = jax.lax.dynamic_slice(self.data, start_indices, slice_sizes)
 
-        # Get the first close price in the window for each asset
-        initial_close = step_data[0:1, :, KLineFeatures.CLOSE.value] + 1e-8
+        # 1. Extract the raw arrays we actually need
+        close_prices = step_data[:, :, KLineFeatures.CLOSE.value]
+        volume = step_data[:, :, KLineFeatures.VOLUME.value]
+        taker_buy_volume = step_data[:, :, KLineFeatures.TAKER_BUY_VOLUME.value]
 
-        # Normalize Open, High, Low, and Close by the initial close price
-        for feature in [
-            KLineFeatures.OPEN,
-            KLineFeatures.HIGH,
-            KLineFeatures.LOW,
-            KLineFeatures.CLOSE,
-        ]:
-            norm_feature = step_data[:, :, feature.value] / initial_close
-            step_data = step_data.at[:, :, feature.value].set(norm_feature)
+        # 2. Time-Series Trend (Normalized Close)
+        # Keeps the shape of the chart, scaled starting at 1.0
+        initial_close = close_prices[0:1, :] + 1e-8
+        norm_close = close_prices / initial_close
 
-        return step_data.flatten()
+        # 3. Cross-Sectional Momentum (Multi-Asset Relative Strength)
+        # Evaluates near 0.0. Positive means outperforming the portfolio average.
+        cross_sectional_mean = jnp.mean(norm_close, axis=1, keepdims=True)
+        cross_momentum = norm_close / (cross_sectional_mean + 1e-8) - 1.0
+
+        # 4. HFT Microstructure (Order Flow Imbalance)
+        # Evaluates strictly between 0.0 and 1.0.
+        # > 0.5 means aggressive buyers are dominating. < 0.5 means aggressive sellers.
+        buy_ratio = taker_buy_volume / (volume + 1e-8)
+
+        # 5. True Portfolio State (Drifted Weights)
+        # Evaluates strictly between 0.0 and 1.0.
+        current_weights = state.values / (state.total_value + 1e-8)
+
+        # Flatten and concatenate into the final 1D observation vector
+        return jnp.concatenate(
+            [
+                norm_close.flatten(),
+                cross_momentum.flatten(),
+                buy_ratio.flatten(),
+                current_weights,
+            ]
+        )
 
     def is_terminal(self, state: EnvState, params: EnvParams) -> jax.Array:
         max_steps_reached = state.step >= params.max_steps
@@ -170,7 +200,7 @@ class PortfolioOptimizationBinance(Environment):
         adj_new_values = adj_new_values.at[0].add(delta_cash)
         new_holdings = adj_new_values / prices
 
-        reward = jnp.log(new_total_value) - jnp.log(state.total_value)
+        reward = (jnp.log(new_total_value) - jnp.log(state.total_value)) * 100.0
 
         next_state = EnvState(
             step=state.step + 1,
