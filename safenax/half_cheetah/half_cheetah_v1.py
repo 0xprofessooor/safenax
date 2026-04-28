@@ -38,6 +38,13 @@ class HalfCheetahV1(Halfcheetah):
         ctrl_cost = self._ctrl_cost_weight * jnp.sum(jnp.square(action), axis=-1)
         return forward_reward - ctrl_cost
 
+    def is_done(self, obs: jax.Array) -> jax.Array:
+        """Brax HalfCheetah does not terminate state-based — episodes end
+        only on length limit. Return zeros to keep the API uniform with
+        EcoAnt / Hopper.
+        """
+        return jnp.zeros(obs.shape[:-1], dtype=jnp.float32)
+
     def transition_fn(self, obs: jax.Array, action: jax.Array) -> jax.Array:
         """Differentiable f(obs, action) -> next_obs.
 

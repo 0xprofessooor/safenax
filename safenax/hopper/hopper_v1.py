@@ -52,6 +52,21 @@ class HopperV1(Hopper):
         ctrl_cost = self._ctrl_cost_weight * jnp.sum(jnp.square(action), axis=-1)
         return forward_reward + healthy_reward - ctrl_cost
 
+    def is_done(self, obs: jax.Array) -> jax.Array:
+        """Termination predicate matching brax Hopper's healthy condition.
+
+        Brax terminates when z-position leaves _healthy_z_range or torso
+        angle leaves _healthy_angle_range (when terminate_when_unhealthy
+        is True, which is the default). The (-100, 100) state-vec bound is
+        omitted — it's never hit in practice.
+        """
+        z = obs[..., 0]
+        angle = obs[..., 1]
+        min_z, max_z = self._healthy_z_range
+        min_a, max_a = self._healthy_angle_range
+        is_unhealthy = (z < min_z) | (z > max_z) | (angle < min_a) | (angle > max_a)
+        return is_unhealthy.astype(jnp.float32)
+
     def transition_fn(self, obs: jax.Array, action: jax.Array) -> jax.Array:
         """Differentiable f(obs, action) -> next_obs.
 
